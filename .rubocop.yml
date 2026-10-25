@@ -1,0 +1,6 @@
+# Omakase Ruby styling (aligned with closeyourit-rails)
+inherit_gem: { rubocop-rails-omakase: rubocop.yml }
+
+AllCops:
+  SuggestExtensions: false
+  TargetRubyVersion: 4.0

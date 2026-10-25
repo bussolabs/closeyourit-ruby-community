@@ -1,0 +1,39 @@
+# Public CI of bussolabs/closeyourit-ruby-community (CYRA-914 B8). It runs on GitHub-hosted runners:
+# a fork's pull request must never reach the private pool. Releases are cut from the maintainer
+# repository, so this workflow only checks.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # Exact declared minimum (required_ruby_version ">= 4.0") and the current one from .ruby-version.
+        ruby: ["4.0.0", ".ruby-version"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ruby/setup-ruby@14594264cd68ce8a2345dd349bc3d138a4ef85c8 # v1.327.0
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          bundler-cache: true
+      - run: bundle exec rubocop
+      # Gemfile.lock is not versioned: generate it so bundler-audit has something to analyze.
+      - run: bundle lock
+      - run: bundle exec bundler-audit check --update
+      - run: COVERAGE_ENFORCE=1 bundle exec rspec
+      # Builds the gem and installs it into an isolated GEM_HOME on the matrix Ruby version.
+      - run: ruby script/smoke_install.rb

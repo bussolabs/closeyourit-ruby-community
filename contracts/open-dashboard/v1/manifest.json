@@ -1,0 +1,20 @@
+{
+  "contract": "closeyourit-open-dashboard",
+  "version": 1,
+  "schema": "schema.json",
+  "fixtures": [
+    { "path": "fixtures/valid/complete.json", "definition": "report", "valid": true },
+    { "path": "fixtures/valid/metric_unavailable.json", "definition": "report", "valid": true },
+    { "path": "fixtures/valid/no_metrics.json", "definition": "report", "valid": true },
+    { "path": "fixtures/invalid/money_without_currency.json", "definition": "report", "valid": false },
+    { "path": "fixtures/invalid/currency_on_count.json", "definition": "report", "valid": false },
+    { "path": "fixtures/invalid/uppercase_key.json", "definition": "report", "valid": false },
+    { "path": "fixtures/invalid/previous_without_period.json", "definition": "report", "valid": false },
+    { "path": "fixtures/invalid/null_value_without_error.json", "definition": "report", "valid": false },
+    { "path": "fixtures/invalid/unknown_type.json", "definition": "report", "valid": false },
+    { "path": "fixtures/invalid/missing_service_version.json", "definition": "report", "valid": false },
+    { "path": "fixtures/invalid/count_with_fraction.json", "definition": "report", "valid": false },
+    { "path": "fixtures/invalid/percent_over_100.json", "definition": "report", "valid": false }
+  ],
+  "http_cases": "fixtures/http/cases.json"
+}

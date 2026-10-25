@@ -1,0 +1,7 @@
+{
+  "open_dashboard": "1.0",
+  "service": { "name": "scontino", "app": "scontino-rails", "sha": "a3f91c2", "environment": "production" },
+  "locale": "it",
+  "generated_at": "2026-10-25T09:30:00Z",
+  "metrics": []
+}

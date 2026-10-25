@@ -1,0 +1,30 @@
+# Dependabot: watches development dependencies (Gemfile) and CI actions (workflows) with no manual work.
+# For bundler the group collects ONLY the development gems (dependency-type: development — rake, rspec,
+# rubocop & co.): runtime ones (concurrent-ruby, logger) stay out of the group → single PRs, so a
+# runtime change stays isolated and clearly visible (consistent with "concurrent-ruby unchanged unless
+# justified"). minor/patch are grouped to reduce noise; majors are NOT covered by any group, so they
+# stay single, separate PRs — every major update stays isolated and verifiable (CYRB-16).
+# The actions' SHA pins are bumped anyway: Dependabot reads the `# vX.Y.Z` comment and updates
+# version and SHA together.
+version: 2
+updates:
+  - package-ecosystem: "bundler"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      dev-dependencies:
+        dependency-type: "development"
+        patterns: [ "*" ]
+        update-types: [ "minor", "patch" ]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      ci-actions:
+        patterns: [ "*" ]
+        update-types: [ "minor", "patch" ]

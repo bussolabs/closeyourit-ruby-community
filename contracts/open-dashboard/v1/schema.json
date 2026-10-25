@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://closeyour.it/contracts/open-dashboard/v1/schema.json",
+  "title": "Open Dashboard v1",
+  "$defs": {
+    "report": {
+      "type": "object",
+      "required": ["open_dashboard", "service", "locale", "generated_at", "metrics"],
+      "properties": {
+        "open_dashboard": { "type": "string", "pattern": "^1\\.[0-9]+$" },
+        "service": { "$ref": "#/$defs/service" },
+        "locale": { "type": "string", "pattern": "^[a-z]{2}(-[A-Z]{2})?$" },
+        "generated_at": { "type": "string", "format": "date-time" },
+        "metrics": { "type": "array", "maxItems": 50, "items": { "$ref": "#/$defs/metric" } }
+      }
+    },
+    "service": {
+      "type": "object",
+      "required": ["name", "app", "version", "sha", "environment"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "app": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "sha": { "type": "string", "minLength": 1 },
+        "environment": { "type": "string", "minLength": 1 },
+        "url": { "type": "string", "format": "uri" }
+      }
+    },
+    "metric": {
+      "type": "object",
+      "required": ["key", "label", "group", "type", "value"],
+      "properties": {
+        "key": { "type": "string", "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$" },
+        "label": { "type": "string", "minLength": 1 },
+        "group": { "type": "string", "minLength": 1 },
+        "type": { "enum": ["count", "money", "percent", "duration"] },
+        "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+        "value": { "type": ["number", "null"] },
+        "previous": { "type": "number" },
+        "period": { "enum": ["1d", "7d", "30d", "90d", "365d"] },
+        "better": { "enum": ["up", "down"] },
+        "error": { "type": "string", "minLength": 1, "maxLength": 200 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "money" } } },
+          "then": { "required": ["currency"] },
+          "else": { "not": { "required": ["currency"] } }
+        },
+        { "if": { "required": ["previous"] }, "then": { "required": ["period"] } },
+        { "if": { "properties": { "value": { "type": "null" } } }, "then": { "required": ["error"] } },
+        {
+          "if": { "properties": { "type": { "enum": ["count", "money"] } } },
+          "then": { "properties": { "value": { "type": ["integer", "null"] }, "previous": { "type": "integer" } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "count" } } },
+          "then": { "properties": { "value": { "minimum": 0 }, "previous": { "minimum": 0 } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "percent" } } },
+          "then": { "properties": { "value": { "minimum": 0, "maximum": 100 }, "previous": { "minimum": 0, "maximum": 100 } } }
+        }
+      ]
+    }
+  }
+}

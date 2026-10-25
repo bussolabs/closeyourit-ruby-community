@@ -1,0 +1,19 @@
+{
+  "open_dashboard": "1.0",
+  "service": {
+    "name": "scontino",
+    "app": "scontino-rails",
+    "version": "v1.4.2",
+    "sha": "a3f91c2",
+    "environment": "production",
+    "url": "https://scontino.it"
+  },
+  "locale": "it",
+  "generated_at": "2026-10-25T09:30:00Z",
+  "metrics": [
+    { "key": "users.registered", "label": "Utenti registrati", "group": "Utenti", "type": "count", "value": 1240, "previous": 1180, "period": "30d" },
+    { "key": "revenue.mrr", "label": "Incasso mensile ricorrente", "group": "Incassi", "type": "money", "currency": "EUR", "value": 428000, "previous": 396000, "period": "30d" },
+    { "key": "subscriptions.churn_rate", "label": "Abbonamenti persi", "group": "Abbonamenti", "type": "percent", "better": "down", "value": 3.1, "previous": 3.6, "period": "30d" },
+    { "key": "support.first_reply", "label": "Prima risposta al supporto", "group": "Supporto", "type": "duration", "better": "down", "value": 5400 }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "open_dashboard": "1.0",
+  "service": { "name": "scontino", "app": "scontino-rails", "version": "unknown", "sha": "unknown", "environment": "production" },
+  "locale": "it",
+  "generated_at": "2026-10-25T09:30:00Z",
+  "metrics": [
+    { "key": "users.registered", "label": "Utenti registrati", "group": "Utenti", "type": "count", "value": 1240 },
+    { "key": "revenue.mrr", "label": "Incasso mensile ricorrente", "group": "Incassi", "type": "money", "currency": "EUR", "value": null, "error": "unavailable" }
+  ]
+}

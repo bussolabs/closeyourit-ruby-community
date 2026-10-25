@@ -1,0 +1,6 @@
+[
+  { "id": "valid-token", "request": { "method": "GET", "path": "/open-dashboard", "authorization": "Bearer od_live_example" }, "configured_token": "od_live_example", "status": 200 },
+  { "id": "wrong-token", "request": { "method": "GET", "path": "/open-dashboard", "authorization": "Bearer od_live_wrong" }, "configured_token": "od_live_example", "status": 401 },
+  { "id": "missing-token", "request": { "method": "GET", "path": "/open-dashboard", "authorization": null }, "configured_token": "od_live_example", "status": 401 },
+  { "id": "not-configured", "request": { "method": "GET", "path": "/open-dashboard", "authorization": "Bearer od_live_example" }, "configured_token": null, "status": 404 }
+]
