@@ -95,34 +95,52 @@ RSpec.describe CloseYourIt::Transport do
     expect(a_request(:post, www)).to have_been_made
   end
 
-  it "does NOT resend the Bearer after a redirect to a different host (ingest secret)" do
+  it "does NOT follow a redirect to a different host: nothing reaches it, the send fails (CYRB-31)" do
     evil = "https://evil.example#{path}"
     stub_request(:post, url).to_return(status: 301, headers: { "Location" => evil })
     stub_request(:post, evil).to_return(status: 202)
+    allow(CloseYourIt.internal_logger).to receive(:warn)
 
-    transport.send_event({ "level" => "error" }, path: path)
-
-    expect(WebMock).to have_requested(:post, evil).with { |req| req.headers["Authorization"].nil? }
+    sent_before = CloseYourIt.stats[:sent]
+    result = nil
+    expect { result = transport.send_event({ "level" => "error" }, path: path) }
+      .to change { CloseYourIt.stats[:failed] }.by(1)
+    expect(CloseYourIt.stats[:sent]).to eq(sent_before)
+    expect(result).to be_a(Net::HTTPRedirection)
+    expect(a_request(:post, evil)).not_to have_been_made
   end
 
-  it "does NOT resend the Bearer on an https→http downgrade (same host)" do
+  it "does NOT follow an https→http downgrade (same host): nothing travels in clear (CYRB-31)" do
     insecure = "http://closeyour.it#{path}"
     stub_request(:post, url).to_return(status: 301, headers: { "Location" => insecure })
     stub_request(:post, insecure).to_return(status: 202)
+    allow(CloseYourIt.internal_logger).to receive(:warn)
 
     transport.send_event({ "level" => "error" }, path: path)
 
-    expect(WebMock).to have_requested(:post, insecure).with { |req| req.headers["Authorization"].nil? }
+    expect(a_request(:post, insecure)).not_to have_been_made
   end
 
-  it "does NOT resend the Bearer when the redirect changes port on the same host (CYRB-22)" do
+  it "does NOT follow a redirect that changes port on the same host (CYRB-22, CYRB-31)" do
     other_port = "https://closeyour.it:8443#{path}"
     stub_request(:post, url).to_return(status: 301, headers: { "Location" => other_port })
     stub_request(:post, other_port).to_return(status: 202)
+    allow(CloseYourIt.internal_logger).to receive(:warn)
 
     transport.send_event({ "level" => "error" }, path: path)
 
-    expect(WebMock).to have_requested(:post, other_port).with { |req| req.headers["Authorization"].nil? }
+    expect(a_request(:post, other_port)).not_to have_been_made
+  end
+
+  it "logs a warning naming the refused redirect target and why (CYRB-31)" do
+    evil = "https://evil.example#{path}"
+    stub_request(:post, url).to_return(status: 302, headers: { "Location" => evil })
+    allow(CloseYourIt.internal_logger).to receive(:warn)
+
+    transport.send_event({ "level" => "error" }, path: path)
+
+    expect(CloseYourIt.internal_logger).to have_received(:warn)
+      .with(%r{redirect to https://evil\.example:443 on #{Regexp.escape(path)} refused: it leaves the configured endpoint})
   end
 
   it "resends the Bearer when the redirect states the default port explicitly (443 == implicit)" do
@@ -147,41 +165,45 @@ RSpec.describe CloseYourIt::Transport do
     expect(WebMock).to have_requested(:post, secure).with(headers: { "Authorization" => "Bearer tok" })
   end
 
-  it "does NOT resend the Bearer on an http→https upgrade to a non-standard port" do
+  it "does NOT follow an http→https upgrade to a non-standard port (CYRB-31)" do
     config.endpoint_url = "http://closeyour.it"
     secure = "https://closeyour.it:8443#{path}"
     stub_request(:post, "http://closeyour.it#{path}").to_return(status: 301, headers: { "Location" => secure })
     stub_request(:post, secure).to_return(status: 202)
+    allow(CloseYourIt.internal_logger).to receive(:warn)
 
     transport.send_event({ "level" => "error" }, path: path)
 
-    expect(WebMock).to have_requested(:post, secure).with { |req| req.headers["Authorization"].nil? }
+    expect(a_request(:post, secure)).not_to have_been_made
   end
 
-  it "in an apex → www → other port chain the Bearer stops at the port change" do
+  it "in an apex → www → other port chain the send stops at the port change (CYRB-31)" do
     www = "https://www.closeyour.it#{path}"
     other_port = "https://www.closeyour.it:8443#{path}"
     stub_request(:post, url).to_return(status: 301, headers: { "Location" => www })
     stub_request(:post, www).to_return(status: 301, headers: { "Location" => other_port })
     stub_request(:post, other_port).to_return(status: 202)
+    allow(CloseYourIt.internal_logger).to receive(:warn)
 
-    transport.send_event({ "level" => "error" }, path: path)
+    result = transport.send_event({ "level" => "error" }, path: path)
 
     expect(WebMock).to have_requested(:post, www).with(headers: { "Authorization" => "Bearer tok" })
-    expect(WebMock).to have_requested(:post, other_port).with { |req| req.headers["Authorization"].nil? }
+    expect(a_request(:post, other_port)).not_to have_been_made
+    expect(result).to be_a(Net::HTTPRedirection)
   end
 
-  it "in a chain the comparison stays on the initial origin: back at the origin the Bearer is sent again" do
+  it "a chain that would come back to the origin stops at its first foreign hop (CYRB-31)" do
     other_port = "https://closeyour.it:8443#{path}"
     www = "https://www.closeyour.it#{path}"
     stub_request(:post, url).to_return(status: 301, headers: { "Location" => other_port })
     stub_request(:post, other_port).to_return(status: 301, headers: { "Location" => www })
     stub_request(:post, www).to_return(status: 202)
+    allow(CloseYourIt.internal_logger).to receive(:warn)
 
     transport.send_event({ "level" => "error" }, path: path)
 
-    expect(WebMock).to have_requested(:post, other_port).with { |req| req.headers["Authorization"].nil? }
-    expect(WebMock).to have_requested(:post, www).with(headers: { "Authorization" => "Bearer tok" })
+    expect(a_request(:post, other_port)).not_to have_been_made
+    expect(a_request(:post, www)).not_to have_been_made
   end
 
   it "a relative Location stays authorized: host and port do not change" do

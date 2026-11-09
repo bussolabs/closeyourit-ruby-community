@@ -12,7 +12,8 @@ module CloseYourIt
     OPEN_TIMEOUT = 2
     READ_TIMEOUT = 3
     # Net::HTTP does not follow redirects: the canonical host may answer 301 (e.g. apex → www).
-    # We re-POST to Location keeping method + body, so the event is not silently lost.
+    # We re-POST to Location keeping method + body, so the event is not silently lost — but only while
+    # Location stays on the configured endpoint's authority (see #same_authority?).
     MAX_REDIRECTS = 2
 
     # Maximum duration of ONE send_event: open + read, repeated for every followed redirect. It is the
@@ -64,25 +65,39 @@ module CloseYourIt
       redirects = 0
 
       loop do
-        response = post_once(uri, body, authorize: same_authority?(origin, uri))
+        response = post_once(uri, body)
         location = response["location"] if response.is_a?(Net::HTTPRedirection)
         return response unless location && redirects < MAX_REDIRECTS
 
+        target = redirect_uri(uri, location)
+        # The payload is as sensitive as the Bearer (stack traces, tags, request data): a redirect off
+        # the configured endpoint's authority is not followed at all (CYRB-31). The redirect response
+        # is returned, so send_event counts it as failed like any other non-2xx.
+        return refuse_redirect(response, target, path) unless same_authority?(origin, target)
+
         redirects += 1
-        uri = redirect_uri(uri, location)
+        uri = target
       end
     end
 
-    def post_once(uri, body, authorize:)
+    def refuse_redirect(response, target, path)
+      CloseYourIt.internal_logger.warn(
+        "CloseYourIt transport: redirect to #{target.scheme}://#{target.host}:#{target.port} on #{path} " \
+        "refused: it leaves the configured endpoint (other host, other port or https→http). " \
+        "Set endpoint_url to the final address."
+      )
+      response
+    end
+
+    def post_once(uri, body)
       http = Net::HTTP.new(uri.host, uri.port)
       http.use_ssl = uri.scheme == "https"
       http.open_timeout = OPEN_TIMEOUT
       http.read_timeout = READ_TIMEOUT
 
       request = Net::HTTP::Post.new(uri.request_uri)
-      # The Bearer is an ingest secret: do not resend it after a redirect to a different host
-      # (or an https→http downgrade), so it is never handed to an untrusted endpoint.
-      request["Authorization"] = "Bearer #{@configuration.token}" if authorize
+      # Only reached on the configured endpoint's authority (see #post): the Bearer always goes.
+      request["Authorization"] = "Bearer #{@configuration.token}"
       request["Content-Type"] = "application/json"
       request["User-Agent"] = "closeyourit-ruby/#{VERSION}"
       request.body = body
@@ -96,10 +111,10 @@ module CloseYourIt
       target.relative? ? current + target : target
     end
 
-    # The Bearer is resent only if the redirect stays on the configured endpoint's authority:
+    # A redirect is followed (body + Bearer) only if it stays on the configured endpoint's authority:
     # same host (or its www variant), same effective port and no https→http downgrade.
     # The port is part of the trust boundary (CYRB-22): on the same server a different port is a
-    # separate service, which must not receive the ingest secret.
+    # separate service, which must receive neither the ingest secret nor the payload (CYRB-31).
     def same_authority?(origin, target)
       return false if origin.scheme == "https" && target.scheme != "https"
       return false unless canonical_host(origin) == canonical_host(target)

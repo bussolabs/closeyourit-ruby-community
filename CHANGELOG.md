@@ -7,6 +7,18 @@ e il progetto aderisce al [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-09
+
+### Interno
+
+- **Le note del file di esempio delle impostazioni sono in inglese.** Nomi e valori delle impostazioni restano identici. (CYRB-25)
+
+## [0.13.1] - 2026-11-09
+
+### Corretto
+
+- **Un redirect che esce dall'endpoint non riceve più nulla.** Prima solo il token restava a casa: errori e metriche partivano lo stesso verso un altro host, un'altra porta o in chiaro (`https` → `http`). Ora l'invio si ferma, conta come fallito e il log avvisa di correggere `endpoint_url`. Il redirect verso `www.` o un altro percorso dello stesso host, e l'upgrade `http` → `https`, funzionano come prima. (CYRB-31)
+
 ## [0.13.0] - 2026-10-25
 
 ### Aggiunto
