@@ -25,6 +25,19 @@ RSpec.describe CloseYourIt::Configuration do
       )
     end
 
+    # CYRB-46: these are 4xx answers to malformed or forged requests (bot scans, stale CSRF tokens,
+    # spoofed X-Forwarded-For), not application defects. They were thousands of events per app, so
+    # they are excluded by DEFAULT instead of being repeated in every initializer.
+    it "excludes the 4xx rejections of malformed requests" do
+      expect(config.excluded_exceptions).to include(
+        "ActionDispatch::RemoteIp::IpSpoofAttackError",
+        "ActionController::InvalidAuthenticityToken",
+        "ActionController::UnknownFormat",
+        "ActionController::BadRequest",
+        "ActionDispatch::Http::MimeNegotiation::InvalidType"
+      )
+    end
+
     it "has PII off and obfuscated SQL by default" do
       expect(config.send_pii).to be(false)
       expect(config.obfuscate_sql).to be(true)
@@ -90,6 +103,50 @@ RSpec.describe CloseYourIt::Configuration do
     end
   end
 
+  # CYRB-47: a local run shares the credentials of the deployed app, so what breaks on the developer's
+  # machine (a pending migration, a half-written feature) landed among the production errors — 11
+  # groups closed by hand on a single app. The local environments are therefore silent by DEFAULT.
+  describe "#enabled? — local environments" do
+    def config_with(**over)
+      described_class.new.tap do |c|
+        c.endpoint_url = "https://closeyour.it"
+        c.token = "tok"
+        c.project_id = "proj-1"
+        over.each { |k, v| c.public_send("#{k}=", v) }
+      end
+    end
+
+    it "excludes development and test by default" do
+      expect(described_class.new.disabled_environments).to eq(%w[development test])
+    end
+
+    it "is false in development" do
+      expect(config_with(environment: "development").enabled?).to be(false)
+    end
+
+    it "is false in test" do
+      expect(config_with(environment: "test").enabled?).to be(false)
+    end
+
+    it "is true in production and in any other environment" do
+      expect(config_with(environment: "production").enabled?).to be(true)
+      expect(config_with(environment: "staging").enabled?).to be(true)
+    end
+
+    it "is true in development when the app empties the list" do
+      config = config_with(environment: "development", disabled_environments: [])
+
+      expect(config.enabled?).to be(true)
+    end
+
+    it "accepts symbols and normalizes them to strings" do
+      config = config_with(environment: "qa", disabled_environments: [ :qa ])
+
+      expect(config.disabled_environments).to eq(%w[qa])
+      expect(config.enabled?).to be(false)
+    end
+  end
+
   describe "HTTPS guard" do
     it "rejects http:// in production (no-op) and logs a warning" do
       fake_logger = instance_double(Logger, warn: nil)
@@ -115,6 +172,9 @@ RSpec.describe CloseYourIt::Configuration do
         c.token = "tok"
         c.project_id = "proj-1"
         c.environment = "development"
+        # Under test here is only the transport guard: development sending is a separate decision
+        # (CYRB-47), switched on explicitly so it does not hide the answer of this example.
+        c.disabled_environments = []
       end
 
       expect(config.enabled?).to be(true)

@@ -7,6 +7,14 @@ e il progetto aderisce al [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-11-11
+
+### Modificato
+
+- **Gli sbagli dei comandi lanciati a mano non sono più errori dell'app.** Quello che scoppia in `rails console` o `rails runner` resta nel terminale. I lavori programmati continuano ad arrivare; per rivedere anche i comandi a mano si attiva `capture_console_errors`. (CYRB-47)
+- **Le prove in locale non scrivono più nel progetto in produzione.** In `development` e `test` la gemma non invia niente; chi vuole gli eventi del locale svuota `disabled_environments`. (CYRB-47)
+- **Le richieste sbagliate dei bot non sono più errori.** I rifiuti delle richieste malformate o truccate (IP falsificato, token CSRF scaduto, formato o parametri non validi) non vengono più inviati: restano nei log dell'app. Per rivederli si toglie la classe da `excluded_exceptions`. (CYRB-46)
+
 ## [0.14.0] - 2026-11-09
 
 ### Interno

@@ -7,13 +7,42 @@ module CloseYourIt
   # Holds all client options. Built by `CloseYourIt.init { |c| ... }`.
   # Without `endpoint_url`/`token`/`project_id` (or with `http://` in production) the client is a no-op.
   class Configuration
+    # 4xx answers to requests that are malformed or forged at the source: bot scans, spoofed
+    # X-Forwarded-For, stale CSRF tokens, `.php`/`.env` probes asking for a format the app does not
+    # render, bodies that are not the declared content type. The app rejecting them is the app working,
+    # not failing, so they are noise in the error channel: on 2026-11-10 they were thousands of events
+    # spread over nearly every app (IpSpoof 1,495, UnknownFormat 390+, CSRF 263). Excluded by DEFAULT
+    # so the list is not repeated in every initializer (CYRB-46).
+    #
+    # They stay in the app's own Rails log, which is where to look when one of them is a real
+    # frontend defect (a wrong `Accept`, a form that lost its token): whoever wants them back among
+    # the errors takes the class off this list (`config.excluded_exceptions -= [...]`).
+    #
+    # Matching walks the ancestors (see CloseYourIt.ignored_exception?), so a subclass raised by the
+    # host app is covered too.
     DEFAULT_EXCLUDED_EXCEPTIONS = %w[
       ActionController::RoutingError
       ActiveRecord::RecordNotFound
+      ActionDispatch::RemoteIp::IpSpoofAttackError
+      ActionController::InvalidAuthenticityToken
+      ActionController::UnknownFormat
+      ActionController::BadRequest
+      ActionDispatch::Http::MimeNegotiation::InvalidType
     ].freeze
 
     # HTTP headers captured in the request context (never Authorization/Cookie → no PII/secrets).
     DEFAULT_REQUEST_HEADER_ALLOWLIST = %w[Accept Content-Type User-Agent Referer].freeze
+
+    # Environments that send NOTHING. A local run normally shares the credentials of the deployed app
+    # (same `.env`, same project_id), so a half-written feature or a pending migration on the
+    # developer's machine was filed as an error of the live app: on 2026-11-10, 11 groups closed by
+    # hand on a single app came from a laptop (`ActiveRecord::PendingMigrationError`, 74 events).
+    # Silent by DEFAULT because the opposite default costs a manual cleanup every day (CYRB-47).
+    #
+    # The list is a denylist, not an allowlist: an app with its own environment name (`staging`,
+    # `preproduction`) keeps sending without touching the configuration. Whoever wants the laptop's
+    # events back empties it (`config.disabled_environments = []`).
+    DEFAULT_DISABLED_ENVIRONMENTS = %w[development test].freeze
 
     # Solid stack service tables: they are framework infrastructure, not application code. A slow
     # query on them cannot be fixed by reading your own repo — it only says the database is under
@@ -34,7 +63,7 @@ module CloseYourIt
                   :capture_request, :request_header_allowlist, :context_lines,
                   :capture_request_body,
                   :breadcrumbs_enabled, :max_breadcrumbs, :sample_rate,
-                  :capture_handled_errors, :report_active_job_errors,
+                  :capture_handled_errors, :report_active_job_errors, :capture_console_errors,
                   :logs_enabled, :logs_sample_rate, :logs_batch_size, :logs_flush_interval,
                   :capture_rails_logs, :logs_min_level, :capture_rails_logs_min_level,
                   :detect_performance_issues, :n_plus_one_threshold, :query_count_threshold,
@@ -45,7 +74,8 @@ module CloseYourIt
                   :usage_enabled, :usage_flush_interval, :usage_max_symbols
     attr_writer :release, :project_root
     attr_reader :excluded_exceptions, :excluded_log_patterns, :excluded_query_patterns,
-                :filter_parameters, :scrub_message_patterns, :trace_propagation_allowlist
+                :filter_parameters, :scrub_message_patterns, :trace_propagation_allowlist,
+                :disabled_environments
 
     def initialize
       @endpoint_url = ENV.fetch("CLOSEYOURIT_ENDPOINT_URL", nil)
@@ -54,8 +84,9 @@ module CloseYourIt
       @release      = ENV.fetch("CLOSEYOURIT_RELEASE", nil)
       @environment  = ENV.fetch("CLOSEYOURIT_ENVIRONMENT") { detect_environment }
 
-      @excluded_exceptions = DEFAULT_EXCLUDED_EXCEPTIONS.dup
-      @before_send         = nil
+      @excluded_exceptions     = DEFAULT_EXCLUDED_EXCEPTIONS.dup
+      @disabled_environments   = DEFAULT_DISABLED_ENVIRONMENTS.dup
+      @before_send             = nil
 
       # Opt-in diagnostic hook: `->(event, details) { ... }` called at every stage of an event's
       # lifecycle (:enqueue, :send, :drop, :timeout, :shutdown) with details free of sensitive data
@@ -108,6 +139,11 @@ module CloseYourIt
       # Captures handled errors (Rails.error.report) and ActiveJob/Sidekiq errors (otherwise lost).
       @capture_handled_errors   = true
       @report_active_job_errors = true
+
+      # Errors of the commands a person types by hand (`rails console`, `rails runner`): default OFF,
+      # they are the typist's mistake, not the app's (see ConsoleSession, CYRB-47). Scheduled work
+      # (rake, jobs) is unaffected. Turn it on to also watch what a hand-run script does.
+      @capture_console_errors = false
 
       # Captures parameter values — opt-in, default OFF (privacy). Binds/arguments may contain PII.
       @capture_query_bindings   = false
@@ -185,6 +221,12 @@ module CloseYourIt
       @excluded_exceptions = Array(list).map { |item| item.is_a?(Regexp) ? item : item.to_s }
     end
 
+    # Environment names → String, so `[:development]` and `["development"]` behave the same (the
+    # environment is compared as text).
+    def disabled_environments=(list)
+      @disabled_environments = Array(list).map(&:to_s)
+    end
+
     # Rails.logger broadcast patterns to drop. Strings become Regexps (literal match on the text):
     # whoever writes `config.excluded_log_patterns = ["Rendered layout"]` means exactly that.
     def excluded_log_patterns=(list)
@@ -222,11 +264,13 @@ module CloseYourIt
       environment.to_s == "production"
     end
 
-    # The client sends only with complete credentials (endpoint + token + project_id) and a secure
-    # transport (http:// allowed outside production).
+    # The client sends only with complete credentials (endpoint + token + project_id), a secure
+    # transport (http:// allowed outside production) and from an environment that is not local
+    # (`disabled_environments`, default development + test — CYRB-47).
     def enabled?
       return false if blank?(endpoint_url) || blank?(token) || blank?(project_id)
       return false if insecure_endpoint? && production?
+      return false if disabled_environment?
 
       true
     end
@@ -310,6 +354,10 @@ module CloseYourIt
     def insecure_endpoint?
       uri = parsed_endpoint
       !uri.nil? && uri.scheme != "https"
+    end
+
+    def disabled_environment?
+      disabled_environments.include?(environment.to_s)
     end
 
     # Warns when project_id is set but does not look like a UUID (the typical mistake is pasting a

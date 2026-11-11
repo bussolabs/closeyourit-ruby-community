@@ -4,6 +4,7 @@ require "logger"
 
 require_relative "closeyourit/version"
 require_relative "closeyourit/configuration"
+require_relative "closeyourit/console_session"
 require_relative "closeyourit/breadcrumb"
 require_relative "closeyourit/trace_context"
 require_relative "closeyourit/scope"
@@ -92,11 +93,12 @@ module CloseYourIt
       configuration.enabled?
     end
 
-    # Captures an exception and sends it (fire-and-forget). No-op when disabled,
-    # or when the exception is excluded or already captured.
+    # Captures an exception and sends it (fire-and-forget). No-op when disabled, in a hand-typed
+    # command, or when the exception is excluded or already captured.
     def capture_exception(exception, handled: false, level: "error", contexts: nil)
       return nil if in_diagnostic?
       return nil unless enabled?
+      return nil if console_error?
       return nil if ignored_exception?(exception)
       return nil if exception_captured?(exception)
 
@@ -445,6 +447,14 @@ module CloseYourIt
       # Contexts where TERM cannot be trapped (platform without TERM, non-main thread): not fatal,
       # the at_exit still covers normal exits.
       internal_logger.warn("CloseYourIt: SIGTERM trap not installed (#{e.class}: #{e.message})")
+    end
+
+    # True when the exception comes from a command typed by hand (`rails console`, `rails runner`)
+    # and the app has not asked to watch those: a typo at the keyboard is not an app failure, and it
+    # was the top source of errors closed by hand (CYRB-47). Scheduled work (rake, jobs) is never in
+    # this family, so its errors keep arriving. Checked on the error path only → cost irrelevant.
+    def console_error?
+      !configuration.capture_console_errors && ConsoleSession.active?
     end
 
     def ignored_exception?(exception)

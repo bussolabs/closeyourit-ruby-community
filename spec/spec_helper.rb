@@ -13,6 +13,12 @@ end
 require "closeyourit-ruby"
 require "webmock/rspec"
 
+# Most examples exercise the SENDING client, but since CYRB-47 `development` and `test` are silent by
+# default (a local run must not write into the deployed project). The suite therefore declares a
+# sending environment; the examples about that gate set `environment` explicitly. `staging` and not
+# `production` on purpose: it keeps the http:// endpoints of the transport examples allowed.
+ENV["CLOSEYOURIT_ENVIRONMENT"] = "staging"
+
 RSpec.configure do |config|
   config.expect_with(:rspec) { |c| c.syntax = :expect }
   config.disable_monkey_patching!
