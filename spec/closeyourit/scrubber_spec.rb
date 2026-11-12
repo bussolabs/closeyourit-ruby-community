@@ -290,4 +290,72 @@ RSpec.describe CloseYourIt::Scrubber do
       expect(scrubber(filter_parameters: [ "badge" ]).filter_value("user_badge", "1234")).to eq("[FILTERED]")
     end
   end
+
+  # CYRB-32 — a string with invalid bytes made JSON.generate raise on the WHOLE batch it travelled
+  # with. The Scrubber now brings every string back to valid UTF-8, replacing only the invalid bytes.
+  describe "invalid UTF-8 (CYRB-32)" do
+    let(:broken) { "abc\xFF\xFEdef".b }
+
+    it "replaces only the invalid bytes of an attribute value with U+FFFD" do
+      out = scrubber.filter_params("payload" => broken)
+
+      expect(out).to eq("payload" => "abc\uFFFD\uFFFDdef")
+      expect(out["payload"].encoding).to eq(Encoding::UTF_8)
+    end
+
+    it "repairs an invalid string tagged as UTF-8" do
+      out = scrubber.filter_params("label" => "caf\xC3".dup.force_encoding(Encoding::UTF_8))
+      expect(out).to eq("label" => "caf\uFFFD")
+    end
+
+    it "leaves a binary-tagged string that is valid UTF-8 with the same text" do
+      out = scrubber.filter_params("city" => "Forlì".b)
+
+      expect(out["city"]).to eq("Forlì")
+      expect(out["city"].encoding).to eq(Encoding::UTF_8)
+    end
+
+    it "returns a valid UTF-8 string as the same object" do
+      value = "untouched"
+      expect(scrubber.filter_params("note" => value)["note"]).to equal(value)
+    end
+
+    it "transcodes a valid string in another encoding instead of mangling it" do
+      out = scrubber.filter_params("name" => "Forlì".encode(Encoding::ISO_8859_1))
+      expect(out).to eq("name" => "Forlì")
+    end
+
+    it "repairs a US-ASCII string carrying a high byte" do
+      out = scrubber.filter_params("raw" => "a\xFFb".dup.force_encoding(Encoding::US_ASCII))
+      expect(out).to eq("raw" => "a\uFFFDb")
+    end
+
+    it "repairs keys, nested values and array items, keeping the denylist working" do
+      out = scrubber.filter_params(
+        "k\xFF".b => { "items" => [ broken, 7 ] }, "password\xFF".b => "secret"
+      )
+
+      expect(out).to eq("k\uFFFD" => { "items" => [ "abc\uFFFD\uFFFDdef", 7 ] }, "password\uFFFD" => "[FILTERED]")
+      expect { JSON.generate(out) }.not_to raise_error
+    end
+
+    it "leaves non-string values untouched" do
+      expect(scrubber.filter_params("n" => 1, "f" => 1.5, "b" => true, "s" => :sym, "z" => nil))
+        .to eq("n" => 1, "f" => 1.5, "b" => true, "s" => :sym, "z" => nil)
+    end
+
+    it "scrubs a message with invalid bytes instead of raising, still redacting credentials" do
+      message = "upload failed \xFF (Authorization: Bearer cyi_placeholder_0123456789)".b
+
+      out = scrubber.scrub_message(message)
+
+      expect(out).to eq("upload failed \uFFFD (Authorization: Bearer [FILTERED])")
+      expect { JSON.generate(out) }.not_to raise_error
+    end
+
+    it "applies the user patterns to a repaired message" do
+      out = scrubber(scrub_message_patterns: [ /id=\d+/ ]).scrub_message("id=42 \xFF".b)
+      expect(out).to eq("[FILTERED] \uFFFD")
+    end
+  end
 end

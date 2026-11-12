@@ -242,6 +242,73 @@ RSpec.describe CloseYourIt::Client do
     end
   end
 
+  # CYRB-32 — the CYRB-24 isolation covered only building the payload: the chunk was serialized
+  # in one go by Transport#post, so ONE value JSON could not encode made the whole POST fail and lost
+  # the healthy entries with it, counted as a single failure.
+  describe "#flush_logs — an unsendable entry does not take the batch with it (CYRB-32)" do
+    def log_event(message, attributes = {})
+      CloseYourIt::LogEvent.new(message, level: :info, attributes: attributes, configuration: config)
+    end
+
+    def healthy_events
+      Array.new(49) { |i| log_event("log-#{i}", "order_id" => i) }
+    end
+
+    let(:logs_url) { "https://closeyour.it/api/v1/projects/proj-1/logs" }
+
+    def sent_entries
+      entries = []
+      expect(WebMock).to(have_requested(:post, logs_url).with { |req| entries.concat(JSON.parse(req.body)) })
+      entries
+    end
+
+    it "sends the 49 healthy entries and the 50th with its binary attribute repaired" do
+      stub_request(:post, logs_url)
+
+      client.flush_logs(healthy_events + [ log_event("log-binary", "blob" => "\x89PNG\xFF\x00".b) ])
+
+      entries = sent_entries
+      expect(entries.size).to eq(50)
+      expect(entries.first(49).map { |entry| entry["message"] }).to eq(Array.new(49) { |i| "log-#{i}" })
+      expect(entries.last["attributes"]).to eq("blob" => "\uFFFDPNG\uFFFD\u0000")
+    end
+
+    it "repairs a log message with invalid bytes instead of dropping it" do
+      stub_request(:post, logs_url)
+
+      client.flush_logs([ log_event("broken \xFF message".b) ])
+
+      expect(sent_entries.map { |entry| entry["message"] }).to eq([ "broken \uFFFD message" ])
+    end
+
+    it "drops and counts only the entry before_send made unsendable; the others still go" do
+      allow(CloseYourIt.internal_logger).to receive(:error)
+      config.before_send = lambda { |payload|
+        payload["message"] == "log-7" ? payload.merge("raw" => "\xFF\xFE".b) : payload
+      }
+      stub_request(:post, logs_url)
+
+      expect { client.flush_logs(healthy_events + [ log_event("log-49") ]) }
+        .to change { CloseYourIt.stats[:dropped] }.by(1)
+        .and change { CloseYourIt.stats[:failed] }.by(0)
+
+      entries = sent_entries
+      expect(entries.size).to eq(49)
+      expect(entries.map { |entry| entry["message"] }).not_to include("log-7")
+      expect(CloseYourIt.internal_logger).to have_received(:error).with(/log dropped — JSON::GeneratorError/)
+    end
+
+    it "sends a batch of healthy entries exactly as before" do
+      stub_request(:post, logs_url)
+      events = healthy_events
+
+      payloads = client.flush_logs(events)
+
+      expect(sent_entries).to eq(JSON.parse(JSON.generate(payloads)))
+      expect(payloads.map { |entry| entry["attributes"] }).to eq(Array.new(49) { |i| { "order_id" => i } })
+    end
+  end
+
   # CYRB-24 R1 — the end-of-life drain must be able to wait as long as one POST, and be configurable.
   describe "#shutdown" do
     it "passes the configured timeout to the worker" do

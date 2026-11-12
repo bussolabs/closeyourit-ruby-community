@@ -7,6 +7,12 @@ e il progetto aderisce al [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-11-11
+
+### Corretto
+
+- **Un log con dati binari non fa più perdere tutto il gruppo.** Prima un solo valore con caratteri non validi faceva fallire l'intero invio dei log, fino a 1000 insieme. Ora i caratteri non validi diventano `�` in log, etichette, dati extra e messaggi d'errore; se un log resta comunque non spedibile (ad esempio per un valore messo da `before_send`) si scarta solo quello e si conta tra le perdite. (CYRB-32)
+
 ## [0.15.0] - 2026-11-11
 
 ### Modificato

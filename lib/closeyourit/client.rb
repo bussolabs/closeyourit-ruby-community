@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "json"
+
 module CloseYourIt
   # Combines Transport + BackgroundWorker: applies `before_send` and dispatches
   # the send fire-and-forget.
@@ -94,10 +96,17 @@ module CloseYourIt
     # may raise: here the buffer has already been drained, so a single broken entry evaluated together
     # with the others would take the whole batch of healthy entries with it. Each entry is isolated
     # and dropped on its own, like the JS client does (CYRB-24). `nil` = entry not to send, already counted.
+    # The entry is also serialized ON ITS OWN here: Transport#post encodes the whole chunk at once, so
+    # one value JSON cannot encode (a binary string put back by before_send, a NaN…) would make the
+    # chunk raise and lose every healthy entry in it (CYRB-32). The Scrubber already repairs invalid
+    # UTF-8; this probe is the net for what it cannot foresee.
     def build_log_payload(event)
       payload = event.to_h
       payload = @configuration.before_send.call(payload) if @configuration.before_send
-      return payload unless payload.nil?
+      unless payload.nil?
+        JSON.generate(payload) # probe only: raises HERE, on this entry alone, not on the whole chunk
+        return payload
+      end
 
       # Intentional before_send drop: counted as in #capture_event, otherwise it would silently
       # disappear from the counters (CYRB-12).

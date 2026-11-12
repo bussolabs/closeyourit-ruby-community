@@ -73,21 +73,44 @@ module CloseYourIt
     STRING_LITERAL = /'(?:[^']|'')*'/
     NUMERIC_LITERAL = /(?<![\w$])\d+(?:\.\d+)?\b/
 
+    # CYRB-32 — what an invalid byte becomes: U+FFFD, the Unicode replacement character.
+    REPLACEMENT = "\uFFFD"
+    # Encodings whose bytes are read AS UTF-8 (binary is how IO, sockets and Marshal hand them over);
+    # any other one (Latin-1, Shift_JIS…) is transcoded.
+    RAW_ENCODINGS = [ Encoding::UTF_8, Encoding::BINARY, Encoding::US_ASCII ].freeze
+
     def initialize(configuration)
       @configuration = configuration
     end
 
-    # Recursively filters Hash/Array replacing the values of sensitive keys.
+    # Recursively filters Hash/Array replacing the values of sensitive keys. Every string (keys too)
+    # comes out as valid UTF-8 (see #utf8): a binary attribute or tag no longer makes JSON.generate
+    # raise on the whole batch it travels with (CYRB-32).
     def filter_params(value)
       case value
       when Hash
         value.each_with_object({}) do |(key, val), acc|
+          key = utf8(key)
           acc[key] = sensitive_key?(key) ? FILTERED : filter_params(val)
         end
       when Array
         value.map { |item| filter_params(item) }
       else
-        value
+        utf8(value)
+      end
+    end
+
+    # Brings a String back to valid UTF-8, replacing ONLY the invalid bytes with U+FFFD: a valid
+    # UTF-8 string (also when tagged as binary, e.g. read from a socket) comes out with the same text.
+    # Non-String values are returned untouched. CYRB-32.
+    def utf8(value)
+      return value unless value.is_a?(String)
+      return value if value.encoding == Encoding::UTF_8 && value.valid_encoding?
+
+      if RAW_ENCODINGS.include?(value.encoding)
+        value.dup.force_encoding(Encoding::UTF_8).scrub(REPLACEMENT)
+      else
+        value.encode(Encoding::UTF_8, invalid: :replace, undef: :replace, replace: REPLACEMENT)
       end
     end
 
@@ -99,13 +122,14 @@ module CloseYourIt
     end
 
     # Built-in rule (authentication schemes) BEFORE the user patterns: the two protections add up,
-    # the first cannot be disabled — privacy-by-default (CYRB-23).
+    # the first cannot be disabled — privacy-by-default (CYRB-23). The text is brought back to valid
+    # UTF-8 first: `gsub` raises on an invalid byte, and so would JSON.generate later (CYRB-32).
     def scrub_message(message)
       return message if message.nil?
 
-      redacted = message.to_s
-                        .gsub(AUTH_HEADER, "\\1\\2#{FILTERED}")
-                        .gsub(AUTH_CREDENTIAL, "\\1#{FILTERED}")
+      redacted = utf8(message.to_s)
+                 .gsub(AUTH_HEADER, "\\1\\2#{FILTERED}")
+                 .gsub(AUTH_CREDENTIAL, "\\1#{FILTERED}")
 
       @configuration.scrub_message_patterns.reduce(redacted) do |acc, pattern|
         acc.gsub(pattern, FILTERED)

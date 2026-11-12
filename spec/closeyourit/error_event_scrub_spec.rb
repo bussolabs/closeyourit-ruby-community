@@ -34,4 +34,47 @@ RSpec.describe "ErrorEvent — message scrubbing" do
     expect(value).to eq("401 from the provider (Authorization: Bearer [FILTERED])")
     expect(value).not_to include("cyi_placeholder_0123456789")
   end
+
+  # CYRB-32 — corrupted characters in tags, extra or the exception message must not block the send:
+  # they reach the payload repaired (U+FFFD in place of the invalid bytes) and it encodes as JSON.
+  describe "invalid UTF-8 (CYRB-32)" do
+    after { CloseYourIt.clear_scope }
+
+    let(:exception) do
+      raise "decode failed on \xFF\xFE".b
+    rescue StandardError => e
+      e
+    end
+
+    # async_threads: 0 → synchronous send, deterministic for WebMock.
+    before do
+      CloseYourIt.init do |c|
+        c.endpoint_url = "https://closeyour.it"
+        c.token = "tok"
+        c.project_id = "proj-1"
+        c.async_threads = 0
+      end
+    end
+
+    it "repairs an exception message with invalid bytes" do
+      payload = CloseYourIt::ErrorEvent.from_exception(exception, configuration: CloseYourIt.configuration).to_h
+
+      expect(payload["exception"]["values"].last["value"]).to eq("decode failed on \uFFFD\uFFFD")
+      expect { JSON.generate(payload) }.not_to raise_error
+    end
+
+    it "sends the error with its corrupted tag and extra repaired" do
+      CloseYourIt.set_tags(origin: "imp\xC3\x28rt".b)
+      CloseYourIt.set_extra(:raw_line, "\xFFrow 12".b)
+      stub = stub_request(:post, "https://closeyour.it/api/v1/projects/proj-1/events")
+
+      CloseYourIt.capture_exception(exception)
+
+      expect(stub).to have_been_requested
+      expect(WebMock).to(have_requested(:post, "https://closeyour.it/api/v1/projects/proj-1/events").with do |req|
+        body = JSON.parse(req.body)
+        body["tags"] == { "origin" => "imp\uFFFD(rt" } && body["extra"] == { "raw_line" => "\uFFFDrow 12" }
+      end)
+    end
+  end
 end
