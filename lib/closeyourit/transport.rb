@@ -102,12 +102,12 @@ module CloseYourIt
     def failed(response, error, path)
       CloseYourIt.stats.increment(:failed)
       if response
-        CloseYourIt.internal_logger.warn("CloseYourIt transport: HTTP #{response.code}#{error_detail(response)} on #{path}")
+        CloseYourIt.internal_log(:warn, "CloseYourIt transport: HTTP #{response.code}#{error_detail(response)} on #{path}")
         CloseYourIt.notify_diagnostic(:drop, reason: :response, status: response.code.to_i)
         return response
       end
 
-      CloseYourIt.internal_logger.error("CloseYourIt transport: #{error.class}: #{error.message}")
+      CloseYourIt.internal_log(:error, "CloseYourIt transport: #{error.class}: #{error.message}")
       if timeout_error?(error)
         CloseYourIt.stats.increment(:timeout)
         CloseYourIt.notify_diagnostic(:timeout, error: error.class.name)
@@ -180,7 +180,8 @@ module CloseYourIt
     end
 
     def refuse_redirect(response, target, path)
-      CloseYourIt.internal_logger.warn(
+      CloseYourIt.internal_log(
+        :warn,
         "CloseYourIt transport: redirect to #{target.scheme}://#{target.host}:#{target.port} on #{path} " \
         "refused: it leaves the configured endpoint (other host, other port or https→http). " \
         "Set endpoint_url to the final address."

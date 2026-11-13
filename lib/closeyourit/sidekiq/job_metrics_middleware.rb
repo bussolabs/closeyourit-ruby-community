@@ -62,7 +62,7 @@ module CloseYourIt
           trace_id: job["jid"], job_context: context
         )
       rescue StandardError => e
-        CloseYourIt.internal_logger.error("CloseYourIt job metrics: #{e.class}: #{e.message}")
+        CloseYourIt.internal_log(:error, "CloseYourIt job metrics: #{e.class}: #{e.message}")
       end
 
       def subscriber

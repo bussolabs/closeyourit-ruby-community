@@ -55,7 +55,7 @@ module CloseYourIt
 
       CloseYourIt.log(:info, "Background job attempt finished", logger: "closeyourit.jobs", contexts: { job: context })
     rescue StandardError
-      CloseYourIt.internal_logger.warn("CloseYourIt job lifecycle emission failed")
+      CloseYourIt.internal_log(:warn, "CloseYourIt job lifecycle emission failed")
     end
   end
 end

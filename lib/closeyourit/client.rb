@@ -44,7 +44,7 @@ module CloseYourIt
       # sql.active_record subscriber, which runs on the query's thread. to_h (scrubber on a malformed
       # bind) and before_send are evaluated here synchronously → if they raise, we absorb, log and
       # drop the event instead of disturbing the host query. See CYRB-2.
-      CloseYourIt.internal_logger.error("CloseYourIt client: #{e.class}: #{e.message}")
+      CloseYourIt.internal_log(:error, "CloseYourIt client: #{e.class}: #{e.message}")
       CloseYourIt.stats.increment(:dropped)
       CloseYourIt.notify_diagnostic(:drop, reason: :error, error: e.class.name)
       nil
@@ -119,7 +119,7 @@ module CloseYourIt
       CloseYourIt.notify_diagnostic(:drop, reason: :before_send)
       nil
     rescue StandardError => e
-      CloseYourIt.internal_logger.error("CloseYourIt client: log dropped — #{e.class}: #{e.message}")
+      CloseYourIt.internal_log(:error, "CloseYourIt client: log dropped — #{e.class}: #{e.message}")
       CloseYourIt.stats.increment(:dropped)
       CloseYourIt.notify_diagnostic(:drop, reason: :error, error: e.class.name)
       nil

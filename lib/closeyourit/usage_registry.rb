@@ -64,7 +64,7 @@ module CloseYourIt
     rescue StandardError => e
       # The flush runs on the timer thread: an error must not propagate into the app nor kill the
       # TimerTask. The load-bearing semantics is last_seen_at: a lost window falsifies nothing.
-      CloseYourIt.internal_logger.error("CloseYourIt usage registry: #{e.class}: #{e.message}")
+      CloseYourIt.internal_log(:error, "CloseYourIt usage registry: #{e.class}: #{e.message}")
     end
 
     def shutdown

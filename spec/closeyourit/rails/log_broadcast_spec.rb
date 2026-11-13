@@ -128,3 +128,160 @@ RSpec.describe CloseYourIt::Rails::LogBroadcast do
     end
   end
 end
+
+# CYRB-37: when the app points `internal_logger` at a logger CloseYourIt also collects, a failed send
+# wrote its error there, the line was collected and sent, the send failed again… and the periodic
+# flush kept the loop alive for as long as the ingest was down. These examples run the REAL path
+# (logger → CloseYourIt.log → buffer → transport) with no stub on CloseYourIt.log; WebMock plays the
+# broken ingest.
+RSpec.describe "Internal messages written into a collected logger (CYRB-37)" do
+  let(:endpoint) { "http://ingest.test" }
+  let(:project_id) { "11111111-2222-3333-4444-555555555555" }
+  let(:logs_path) { "/api/v1/projects/#{project_id}/logs" }
+  let(:logs_url) { "#{endpoint}#{logs_path}" }
+  let(:app_output) { StringIO.new }
+
+  # Stands in for Rails.logger broadcasting to the CloseYourIt sink (ActiveSupport::BroadcastLogger):
+  # every line goes to the app output AND to the sink.
+  let(:broadcasting_logger_class) do
+    Class.new(::Logger) do
+      def initialize(io, sink)
+        super(io)
+        @sink = sink
+      end
+
+      def add(severity, message = nil, progname = nil, &block)
+        super
+        @sink.add(severity, message, progname, &block)
+      end
+    end
+  end
+
+  let(:rails_logger) { broadcasting_logger_class.new(app_output, CloseYourIt::Rails::LogBroadcast.new(:warn)) }
+
+  # One POST to /logs carrying exactly these messages, in order.
+  def logs_batch(*messages)
+    a_request(:post, logs_url).with { |request| JSON.parse(request.body).map { |entry| entry["message"] } == messages }
+  end
+
+  before do
+    @original_internal_logger = CloseYourIt.instance_variable_get(:@internal_logger)
+    CloseYourIt.init do |c|
+      c.endpoint_url = endpoint
+      c.token = "tok"
+      c.project_id = project_id
+      c.async_threads = 0 # sends on the caller's thread: each flush is one observable POST
+      c.logs_flush_interval = 0 # no timer: the examples flush by hand, as the timer would
+      c.logs_batch_size = 100
+    end
+  end
+
+  after do
+    CloseYourIt.internal_logger = @original_internal_logger
+  end
+
+  shared_examples "a loop-free failed send" do |failure|
+    before { failure.call(stub_request(:post, logs_url)) }
+
+    it "sends the real logs once and nothing more on the following flushes" do
+      3.times { |i| app_logger.warn("disk almost full #{i}") }
+      3.times { CloseYourIt.flush_logs }
+
+      expect(logs_batch("disk almost full 0", "disk almost full 1", "disk almost full 2")).to have_been_made.once
+      expect(a_request(:post, logs_url)).to have_been_made.once
+    end
+
+    it "keeps collecting the real logs the app writes during the outage" do
+      app_logger.warn("first")
+      CloseYourIt.flush_logs
+      app_logger.error("second")
+      2.times { CloseYourIt.flush_logs }
+
+      expect(logs_batch("first")).to have_been_made.once
+      expect(logs_batch("second")).to have_been_made.once
+      expect(a_request(:post, logs_url)).to have_been_made.twice
+    end
+
+    it "leaves the internal-message flag down after the failed send" do
+      app_logger.warn("real line")
+      CloseYourIt.flush_logs
+
+      expect(CloseYourIt.in_internal_log?).to be(false)
+    end
+  end
+
+  context "when internal_logger is the app logger broadcast to CloseYourIt" do
+    let(:app_logger) { rails_logger }
+
+    before { CloseYourIt.internal_logger = rails_logger }
+
+    context "with the ingest unreachable" do
+      it_behaves_like "a loop-free failed send", ->(stub) { stub.to_raise(Errno::ECONNREFUSED) }
+
+      it "still writes the internal message to the app log" do
+        stub_request(:post, logs_url).to_raise(Errno::ECONNREFUSED)
+        app_logger.warn("real line")
+        CloseYourIt.flush_logs
+
+        expect(app_output.string).to include("CloseYourIt transport: Errno::ECONNREFUSED")
+      end
+    end
+
+    context "with the ingest answering an error" do
+      it_behaves_like "a loop-free failed send", ->(stub) { stub.to_return(status: 503) }
+
+      it "still writes the internal message to the app log" do
+        stub_request(:post, logs_url).to_return(status: 503)
+        app_logger.warn("real line")
+        CloseYourIt.flush_logs
+
+        expect(app_output.string).to include("CloseYourIt transport: HTTP 503 on #{logs_path}")
+      end
+    end
+  end
+
+  context "when internal_logger is CloseYourIt.logger itself" do
+    let(:app_logger) { CloseYourIt.logger }
+
+    before { CloseYourIt.internal_logger = CloseYourIt.logger }
+
+    context "with the ingest unreachable" do
+      it_behaves_like "a loop-free failed send", ->(stub) { stub.to_raise(Errno::ECONNREFUSED) }
+    end
+
+    context "with the ingest answering an error" do
+      it_behaves_like "a loop-free failed send", ->(stub) { stub.to_return(status: 503) }
+    end
+  end
+
+  context "when internal_logger is a plain logger (the default terminal shape)" do
+    it "writes the internal message as before and sends only the real log" do
+      stub_request(:post, logs_url).to_raise(Errno::ECONNREFUSED)
+      CloseYourIt.internal_logger = ::Logger.new(app_output)
+
+      CloseYourIt.logger.warn("real line")
+      2.times { CloseYourIt.flush_logs }
+
+      expect(app_output.string).to match(/ERROR -- : CloseYourIt transport: Errno::ECONNREFUSED/)
+      expect(logs_batch("real line")).to have_been_made.once
+      expect(a_request(:post, logs_url)).to have_been_made.once
+    end
+  end
+
+  # R-1 of the plan: an internal message written straight to `internal_logger` skips the guard and
+  # reopens the loop. The one allowed call is the write inside CloseYourIt.internal_log itself.
+  it "has no direct internal_logger write outside CloseYourIt.internal_log" do
+    lib_root = File.expand_path("../../../lib", __dir__)
+    allowed = "internal_logger.public_send(level, message)"
+    offenders = Dir.glob(File.join(lib_root, "**", "*.rb")).flat_map do |file|
+      File.readlines(file).each_with_index.filter_map do |line, index|
+        next unless line.match?(/internal_logger\s*\./)
+        next if line.strip == allowed && file.end_with?("closeyourit-ruby.rb")
+
+        "#{file}:#{index + 1}"
+      end
+    end
+
+    expect(offenders).to be_empty
+  end
+end

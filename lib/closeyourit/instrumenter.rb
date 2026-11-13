@@ -21,7 +21,7 @@ module CloseYourIt
         duration_ms = (Process.clock_gettime(Process::CLOCK_MONOTONIC) - start) * 1000.0
         report(label, duration_ms, location, args: args, kwargs: kwargs)
       rescue StandardError => e
-        CloseYourIt.internal_logger.error("CloseYourIt instrumenter: #{e.class}: #{e.message}")
+        CloseYourIt.internal_log(:error, "CloseYourIt instrumenter: #{e.class}: #{e.message}")
       end
     end
 

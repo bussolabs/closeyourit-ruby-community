@@ -36,7 +36,7 @@ module CloseYourIt
       # The flush runs both on the request thread (full batch) and on the timer thread: a to_h /
       # before_send raising on ONE event must not propagate into the app nor kill the TimerTask
       # (which would otherwise stop flushing → logs pile up and are lost). Swallowed and logged.
-      CloseYourIt.internal_logger.error("CloseYourIt log buffer: #{e.class}: #{e.message}")
+      CloseYourIt.internal_log(:error, "CloseYourIt log buffer: #{e.class}: #{e.message}")
       # The batch has already been drained: if flush_logs raises, those logs are lost. Count them as
       # drops so the failure is not silent (CYRB-12). `batch.to_a` is nil-safe.
       batch.to_a.size.times do

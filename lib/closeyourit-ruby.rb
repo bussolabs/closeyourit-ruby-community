@@ -59,6 +59,14 @@ module CloseYourIt
   # (worker pool for send/timeout, calling thread for enqueue/drop).
   DIAGNOSTIC_GUARD = :__closeyourit_in_diagnostic
 
+  # Thread-local flag meaning "the gem is writing one of its own internal messages" (see
+  # #internal_log). When the app points `internal_logger` at a logger that CloseYourIt also collects
+  # (Rails.logger with `capture_rails_logs`, or `CloseYourIt.logger`), the line written there must not
+  # come back as a log entry: a failed send would log, the log would be sent, the send would fail
+  # again… a loop that never stops while the ingest is down (CYRB-37). Kept apart from
+  # DIAGNOSTIC_GUARD: it silences ONLY logs, never errors, messages or diagnostic notifications.
+  INTERNAL_LOG_GUARD = :__closeyourit_in_internal_log
+
   class << self
     # Configures the client. Without token/endpoint → no-op.
     #
@@ -186,6 +194,26 @@ module CloseYourIt
 
     attr_writer :internal_logger
 
+    # The single path for the gem's own messages: every internal warning/error goes through here, never
+    # through `internal_logger` directly. While writing it raises INTERNAL_LOG_GUARD, so a logger that
+    # CloseYourIt also collects does not turn the message into a new log entry (CYRB-37). The previous
+    # value is restored even when the logger raises: a flag left up would silently drop the app's
+    # real logs on this thread.
+    #   CloseYourIt.internal_log(:warn, "CloseYourIt transport: HTTP 503 on /logs")
+    def internal_log(level, message)
+      previous = Thread.current[INTERNAL_LOG_GUARD]
+      Thread.current[INTERNAL_LOG_GUARD] = true
+      internal_logger.public_send(level, message)
+    ensure
+      Thread.current[INTERNAL_LOG_GUARD] = previous
+    end
+
+    # True while the current thread is writing an internal message (see #internal_log): the entry
+    # points that collect logs drop the line instead of building it.
+    def in_internal_log?
+      Thread.current[INTERNAL_LOG_GUARD] == true
+    end
+
     # Logger-compatible application logger: forwards every message to `CloseYourIt.log` (→ ingest /logs).
     #   CloseYourIt.logger.info("ordine creato", order_id: 1)
     def logger
@@ -209,6 +237,8 @@ module CloseYourIt
     # Apps use `CloseYourIt.log` / `CloseYourIt.logger`.
     def emit_log(level, message, source: nil, attributes: {})
       return nil if in_diagnostic?
+      # The gem's own message written into a collected logger: not an app log, never collected (CYRB-37).
+      return nil if in_internal_log?
       return nil unless logs_enabled?
       return nil if log_below_min_level?(level)
       return record_drop(:sampled) unless logs_sampled?
@@ -322,7 +352,7 @@ module CloseYourIt
       begin
         hook.call(event, details)
       rescue StandardError => e
-        internal_logger.error("CloseYourIt diagnostic hook: #{e.class}: #{e.message}")
+        internal_log(:error, "CloseYourIt diagnostic hook: #{e.class}: #{e.message}")
       ensure
         Thread.current[DIAGNOSTIC_GUARD] = false
       end
@@ -446,7 +476,7 @@ module CloseYourIt
     rescue ArgumentError, RuntimeError => e
       # Contexts where TERM cannot be trapped (platform without TERM, non-main thread): not fatal,
       # the at_exit still covers normal exits.
-      internal_logger.warn("CloseYourIt: SIGTERM trap not installed (#{e.class}: #{e.message})")
+      internal_log(:warn, "CloseYourIt: SIGTERM trap not installed (#{e.class}: #{e.message})")
     end
 
     # True when the exception comes from a command typed by hand (`rails console`, `rails runner`)

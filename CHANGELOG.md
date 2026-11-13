@@ -7,6 +7,12 @@ e il progetto aderisce al [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [0.15.4] - 2026-11-13
+
+### Corretto
+
+- **Un invio fallito non ne provoca più un altro all'infinito.** Se `internal_logger` puntava a un registro che CloseYourIt raccoglie (`Rails.logger` con `capture_rails_logs`, oppure `CloseYourIt.logger`), il messaggio d'errore di un invio fallito veniva raccolto come log, rispedito, falliva di nuovo, e il giro non si fermava finché il server restava irraggiungibile. Ora i messaggi della libreria passano tutti da `CloseYourIt.internal_log`: continuano a comparire nel registro come prima, ma non vengono più raccolti. I log veri dell'app scritti durante il guasto si raccolgono come sempre, e errori e messaggi catturati non cambiano. (CYRB-37)
+
 ## [0.15.3] - 2026-11-13
 
 ### Aggiunto

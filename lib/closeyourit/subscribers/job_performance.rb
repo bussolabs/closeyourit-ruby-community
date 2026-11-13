@@ -154,7 +154,7 @@ module CloseYourIt
         @subscriptions << ActiveSupport::Notifications.monotonic_subscribe("#{name}.active_job") do |*args|
           callback.call(ActiveSupport::Notifications::Event.new(*args))
         rescue StandardError
-          CloseYourIt.internal_logger.warn("CloseYourIt job observation failed")
+          CloseYourIt.internal_log(:warn, "CloseYourIt job observation failed")
         end
       end
 

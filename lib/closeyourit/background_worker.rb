@@ -20,12 +20,12 @@ module CloseYourIt
         block.call
       rescue Exception => e # rubocop:disable Lint/RescueException
         # Never propagate: telemetry must not be able to crash the host app.
-        CloseYourIt.internal_logger.error("CloseYourIt background worker: #{e.class}: #{e.message}")
+        CloseYourIt.internal_log(:error, "CloseYourIt background worker: #{e.class}: #{e.message}")
       end
 
       unless accepted
         CloseYourIt.stats.increment(:dropped)
-        CloseYourIt.internal_logger.warn("CloseYourIt background worker: queue full, event dropped")
+        CloseYourIt.internal_log(:warn, "CloseYourIt background worker: queue full, event dropped")
         CloseYourIt.notify_diagnostic(:drop, reason: :queue_full)
       end
 
@@ -57,7 +57,8 @@ module CloseYourIt
     # ImmediateExecutor (synchronous, no queue) → zero left over.
     def report_abandoned(timeout)
       abandoned = @executor.respond_to?(:queue_length) ? @executor.queue_length.to_i : 0
-      CloseYourIt.internal_logger.warn(
+      CloseYourIt.internal_log(
+        :warn,
         "CloseYourIt background worker: drain expired after #{timeout}s, #{abandoned} events abandoned"
       )
       abandoned.times do

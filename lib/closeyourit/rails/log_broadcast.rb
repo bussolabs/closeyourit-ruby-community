@@ -27,6 +27,9 @@ module CloseYourIt
       def add(severity, message = nil, progname = nil)
         severity ||= ::Logger::UNKNOWN
         return true if severity < level
+        # A message the gem itself is writing into Rails.logger (internal_logger pointed there): never
+        # forwarded, or a failed send would log, and the log would be sent again (CYRB-37).
+        return true if CloseYourIt.in_internal_log?
 
         text = message || (block_given? ? yield : nil) || progname
         return true if text.nil? || CloseYourIt.ignored_log_message?(text)

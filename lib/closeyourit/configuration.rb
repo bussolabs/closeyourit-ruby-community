@@ -279,9 +279,9 @@ module CloseYourIt
     # Logs configuration warnings (e.g. http:// endpoint, malformed project_id/endpoint).
     # Never raises: consistent with the client's no-op philosophy. Called by `CloseYourIt.init`.
     def validate!
-      CloseYourIt.internal_logger.warn(insecure_endpoint_message) if insecure_endpoint?
-      CloseYourIt.internal_logger.warn(malformed_project_id_message) if malformed_project_id?
-      CloseYourIt.internal_logger.warn(malformed_endpoint_message) if malformed_endpoint?
+      CloseYourIt.internal_log(:warn, insecure_endpoint_message) if insecure_endpoint?
+      CloseYourIt.internal_log(:warn, malformed_project_id_message) if malformed_project_id?
+      CloseYourIt.internal_log(:warn, malformed_endpoint_message) if malformed_endpoint?
       self
     end
 

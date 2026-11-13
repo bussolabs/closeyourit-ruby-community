@@ -50,6 +50,8 @@ module CloseYourIt
     def write(level, message, attributes, &block)
       # Gate BEFORE the block: `logger.debug { expensive_dump }` does not evaluate the block when logs are off.
       return unless CloseYourIt.logs_active?
+      # `internal_logger = CloseYourIt.logger`: the gem's own message is not collected (CYRB-37).
+      return if CloseYourIt.in_internal_log?
 
       message = block.call if block
       # Source and attributes kept apart: the `attributes` (including any `logger` key) stay data;
