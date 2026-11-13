@@ -299,6 +299,11 @@ module CloseYourIt
     # CloseYourIt.init; with `config.trap_signals` it is also reached on SIGTERM. Idempotent: calling
     # it again is safe (buffer already empty, worker already stopped → no-op).
     def shutdown
+      # A forked child inherits the at_exit registered by the parent. If it never touched the gem, the
+      # buffers below are still the parent's: draining them would send the parent's logs, usage counts
+      # and queued events a second time (CYRB-36). The same PID check used by every send abandons them
+      # first, without creating new resources; a child that used the gem already has its own.
+      ensure_current_process!
       # Order matters: buffers first (they queue the last batch in the worker), then the worker (drains them).
       @usage_registry&.shutdown
       @log_buffer&.shutdown

@@ -7,6 +7,12 @@ e il progetto aderisce al [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [0.15.5] - 2026-11-13
+
+### Corretto
+
+- **Un processo figlio non rispedisce più i dati del processo principale.** Prima un processo figlio che si chiudeva senza usare la libreria spediva di nuovo i log in attesa, i conteggi di utilizzo e gli invii in coda ereditati dal principale, che arrivavano così due volte. Ora alla chiusura il figlio li abbandona senza spedirli; un figlio che ha usato la libreria continua a spedire i dati suoi. (CYRB-36)
+
 ## [0.15.4] - 2026-11-13
 
 ### Corretto

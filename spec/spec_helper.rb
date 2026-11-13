@@ -34,9 +34,14 @@ RSpec.configure do |config|
   config.before do
     previous_buffer = CloseYourIt.instance_variable_get(:@log_buffer)
     previous_buffer&.timer&.shutdown
+    # Same for the usage registry (CYRB-36): its TimerTask is stopped WITHOUT flushing, then dropped,
+    # so leftover counts are neither sent by an orphan timer nor drained by the next test's `init`.
+    previous_registry = CloseYourIt.instance_variable_get(:@usage_registry)
+    previous_registry&.timer&.shutdown
     CloseYourIt.instance_variable_set(:@configuration, nil)
     CloseYourIt.instance_variable_set(:@client, nil)
     CloseYourIt.instance_variable_set(:@log_buffer, nil)
+    CloseYourIt.instance_variable_set(:@usage_registry, nil)
     # PID where the client/buffer were materialized (fork detection, CYRB-11): cleared so a test that
     # stubs `Process.pid` to simulate a child does not leave a stale value for the next test.
     CloseYourIt.instance_variable_set(:@pid, nil)

@@ -158,4 +158,89 @@ RSpec.describe "CloseYourIt — transport recovery after a fork (CYRB-11)" do
       expect(result["delivered"]).to be(true)
     end
   end
+
+  # CYRB-36 — a child that never touches the gem still inherits the parent's at_exit, which runs
+  # #shutdown. It must abandon the inherited buffers instead of sending the parent's data again.
+  describe "shutdown in a child that never used the gem (CYRB-36)" do
+    it "abandons inherited logs, usage counts and client without shutting them down or sending" do
+      real_pid = Process.pid
+      init!
+      3.times { |i| CloseYourIt.log(:info, "parent-#{i}") }
+      CloseYourIt.used("checkout.legacy")
+      old_client = CloseYourIt.send(:client)
+      old_buffer = CloseYourIt.instance_variable_get(:@log_buffer)
+      old_registry = CloseYourIt.instance_variable_get(:@usage_registry)
+      [ old_client, old_buffer, old_registry ].each { |resource| allow(resource).to receive(:shutdown) }
+      allow(old_client).to receive(:flush_logs)
+      allow(old_client).to receive(:flush_usage)
+
+      allow(Process).to receive(:pid).and_return(real_pid + 1) # simulates the child PID
+
+      CloseYourIt.shutdown
+
+      expect(old_registry).not_to have_received(:shutdown)
+      expect(old_buffer).not_to have_received(:shutdown)
+      expect(old_client).not_to have_received(:shutdown)
+      expect(old_client).not_to have_received(:flush_logs)
+      expect(old_client).not_to have_received(:flush_usage)
+      # The inherited data is left where it was: neither drained nor sent from the child.
+      expect(old_buffer.instance_variable_get(:@events).size).to eq(3)
+      expect(old_registry.instance_variable_get(:@symbols)).not_to be_empty
+      # Nothing new was created by the shutdown itself.
+      expect(CloseYourIt.instance_variable_get(:@client)).to be_nil
+      expect(CloseYourIt.instance_variable_get(:@log_buffer)).to be_nil
+      expect(CloseYourIt.instance_variable_get(:@usage_registry)).to be_nil
+    end
+
+    it "still drains the logs on a normal shutdown in the same process" do
+      init!
+      3.times { |i| CloseYourIt.log(:info, "parent-#{i}") }
+      client = CloseYourIt.send(:client)
+      allow(client).to receive(:flush_logs)
+
+      CloseYourIt.shutdown
+
+      expect(client).to have_received(:flush_logs).once
+    end
+
+    it "a real child exiting normally sends nothing: the parent's 3 logs leave once, from the parent" do
+      skip "Process.fork not available on this platform" unless Process.respond_to?(:fork)
+
+      init!
+      reader, writer = IO.pipe
+      # Fake ingest shared by parent and child through the pipe: one line per batch sent, tagged with
+      # the sending PID. Synchronous worker (async_threads: 0) → the write happens in the caller.
+      fake_transport = Object.new
+      fake_transport.define_singleton_method(:send_event) do |chunk, path:|
+        line = JSON.generate("pid" => Process.pid, "messages" => chunk.map { |entry| entry["message"] })
+        writer.write("#{line}\n")
+        true
+      end
+      fake_transport.define_singleton_method(:stop_retries!) { nil }
+      CloseYourIt.send(:client).instance_variable_set(:@transport, fake_transport)
+      3.times { |i| CloseYourIt.log(:info, "parent-#{i}") }
+
+      # The child does nothing and exits NORMALLY, so the at_exit inherited from the parent runs.
+      pid = Process.fork { reader.close }
+      begin
+        Timeout.timeout(20) { Process.wait(pid) }
+      rescue Timeout::Error
+        Process.kill("KILL", pid)
+        Process.wait(pid)
+        raise "the child process did not exit within the timeout"
+      end
+      expect(Process.last_status.success?).to be(true)
+
+      CloseYourIt.shutdown # the parent sends its own pending logs
+      writer.close
+      batches = Timeout.timeout(5) { reader.read }.lines.map { |line| JSON.parse(line) }
+
+      expect(batches.size).to eq(1)
+      expect(batches.first["pid"]).to eq(Process.pid)
+      expect(batches.first["messages"]).to eq(%w[parent-0 parent-1 parent-2])
+    ensure
+      writer&.close unless writer&.closed?
+      reader&.close unless reader&.closed?
+    end
+  end
 end
