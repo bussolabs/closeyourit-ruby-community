@@ -1,5 +1,8 @@
 # frozen_string_literal: true
 
+require "fileutils"
+require "tmpdir"
+
 RSpec.describe CloseYourIt::ErrorEvent do
   let(:config) do
     CloseYourIt::Configuration.new.tap do |c|
@@ -114,6 +117,64 @@ RSpec.describe CloseYourIt::ErrorEvent do
       expect(frame["abs_path"]).to start_with("/nonexistent/")
       expect(frame["filename"]).to eq(File.basename(fake_loc.path))
       expect(frame).not_to have_key("context_line")
+    end
+
+    # CYRB-40: the snippet is read only for in_app frames. The library file is real and readable,
+    # so a missing snippet proves the read was skipped, not that it failed.
+    context "with a library frame in the backtrace" do
+      around do |example|
+        Dir.mktmpdir do |dir|
+          @gem_path = File.join(dir, "gems", "rack-3.0.0", "lib", "rack.rb")
+          FileUtils.mkdir_p(File.dirname(@gem_path))
+          File.write(@gem_path, "module Rack\n  def self.call\n    raise 'x'\n  end\nend\n")
+          CloseYourIt::LineCache.clear
+          example.run
+        ensure
+          CloseYourIt::LineCache.clear
+        end
+      end
+
+      let(:app_line) { __LINE__ } # this very line is the app frame's context_line
+
+      def library_event(config)
+        err = RuntimeError.new("from a gem")
+        app_loc = instance_double(Thread::Backtrace::Location, path: __FILE__, label: "app", lineno: app_line)
+        gem_loc = instance_double(Thread::Backtrace::Location, path: @gem_path, label: "call", lineno: 3)
+        allow(err).to receive(:backtrace_locations).and_return([ gem_loc, app_loc ])
+        described_class.from_exception(err, configuration: config).to_h
+      end
+
+      def frame_for(payload, path)
+        payload["exception"]["values"].last["stacktrace"]["frames"].find { |f| f["abs_path"] == path }
+      end
+
+      it "keeps the context for app frames and omits it for library frames" do
+        payload = library_event(config)
+        app_frame = frame_for(payload, __FILE__)
+        gem_frame = frame_for(payload, @gem_path)
+
+        expect(app_frame["in_app"]).to be(true)
+        expect(app_frame["context_line"]).to include("let(:app_line)")
+        expect(gem_frame["in_app"]).to be(false)
+        expect(gem_frame).to include("filename" => "rack.rb", "function" => "call", "lineno" => 3)
+        expect(gem_frame.keys).not_to include("pre_context", "context_line", "post_context")
+      end
+
+      it "never asks the line cache for a library file" do
+        allow(CloseYourIt::LineCache).to receive(:lines).and_call_original
+        library_event(config)
+
+        expect(CloseYourIt::LineCache).to have_received(:lines).with(__FILE__)
+        expect(CloseYourIt::LineCache).not_to have_received(:lines).with(@gem_path)
+      end
+
+      it "reads no file at all with context_lines = 0" do
+        config.context_lines = 0
+        allow(CloseYourIt::LineCache).to receive(:lines).and_call_original
+        library_event(config)
+
+        expect(CloseYourIt::LineCache).not_to have_received(:lines)
+      end
     end
   end
 

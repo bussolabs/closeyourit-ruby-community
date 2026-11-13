@@ -77,6 +77,8 @@ module CloseYourIt
     # + source snippet (pre_context/context_line/post_context) when the file is readable.
     # `filename` is relative/basename (culprit comparable across SDKs — CYRB-4); `abs_path` is the
     # absolute path for the detail view and for reading the context lines' source.
+    # The snippet is read only for in_app frames: gem/stdlib frames stay without it, so building
+    # the event never touches the disk for library files (CYRB-40).
     def frames(locations)
       return [] if locations.nil?
 
@@ -89,7 +91,7 @@ module CloseYourIt
           "lineno" => loc.lineno,
           "in_app" => in_app?(loc.path)
         }
-        add_context!(frame, loc.path, loc.lineno, context_lines) if context_lines.positive?
+        add_context!(frame, loc.path, loc.lineno, context_lines) if context_lines.positive? && frame["in_app"]
         frame
       end
     end

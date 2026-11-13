@@ -7,6 +7,12 @@ e il progetto aderisce al [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-11-13
+
+### Corretto
+
+- **Preparare una segnalazione d'errore non rallenta più le altre.** Prima la libreria leggeva dal disco anche i file delle gemme e della libreria standard per mostrare il codice attorno all'errore, e mentre leggeva un file bloccava tutti gli altri errori in arrivo; a 200 file letti dimenticava tutto e ricominciava. Ora il codice attorno si legge solo per i file dell'applicazione, le righe delle librerie restano senza codice, un file lento non fa aspettare gli altri e a memoria piena si toglie solo il file letto per primo. Con `context_lines = 0` non si legge nessun file, come prima. (CYRB-40)
+
 ## [0.15.5] - 2026-11-13
 
 ### Corretto

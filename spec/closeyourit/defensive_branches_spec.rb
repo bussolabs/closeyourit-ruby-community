@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "spec_helper"
+require "securerandom"
+require "tmpdir"
 
 # Exercises the defensive branches (no-op guards, nil/edge input handling, transport error paths)
 # left uncovered by branch coverage. They are real behaviors the gem promises — "no-op when
@@ -56,6 +58,125 @@ RSpec.describe "defensive branches" do
     it "Scrubber.scrub_message lets nil through" do
       scrubber = CloseYourIt::Scrubber.new(CloseYourIt.configuration)
       expect(scrubber.scrub_message(nil)).to be_nil
+    end
+  end
+
+  # CYRB-40: the disk read happens outside the mutex, and a full cache evicts only its oldest entry.
+  describe "LineCache" do
+    let(:cache) { CloseYourIt::LineCache }
+    let(:wait) { 5 } # upper bound (seconds) on every cross-thread wait: a regression fails, never hangs
+
+    before { cache.clear }
+    after { cache.clear }
+
+    def cached_paths
+      cache.instance_variable_get(:@cache).keys
+    end
+
+    def stub_reads
+      allow(cache).to receive(:read_lines) { |path| [ "line of #{path}" ] }
+    end
+
+    def fill(count)
+      count.times { |i| cache.lines("/app/file-#{i}.rb") }
+    end
+
+    def finish(*threads)
+      threads.compact.each do |thread|
+        thread.kill
+        thread.join(wait)
+      end
+    end
+
+    it "reads a real file once and serves repeated hits from memory" do
+      Dir.mktmpdir do |dir|
+        path = File.join(dir, "user.rb")
+        File.write(path, "class User\nend\n")
+        allow(File).to receive(:readlines).and_call_original
+
+        3.times { expect(cache.lines(path)).to eq([ "class User", "end" ]) }
+        expect(File).to have_received(:readlines).with(path, chomp: true).once
+      end
+    end
+
+    it "caches unreadable files as nil without probing them again" do
+      path = "/nonexistent/#{SecureRandom.hex(4)}.rb"
+      allow(File).to receive(:readable?).and_call_original
+
+      2.times { expect(cache.lines(path)).to be_nil }
+      expect(File).to have_received(:readable?).with(path).once
+      expect(cached_paths).to eq([ path ])
+    end
+
+    it "evicts only the file inserted first when the 201st file arrives" do
+      stub_reads
+      fill(cache::MAX_FILES + 1)
+
+      expect(cached_paths.size).to eq(cache::MAX_FILES)
+      expect(cached_paths).not_to include("/app/file-0.rb")
+      expect(cached_paths).to eq((1..cache::MAX_FILES).map { |i| "/app/file-#{i}.rb" })
+    end
+
+    it "neither reads again nor evicts on repeated hits of a full cache" do
+      stub_reads
+      fill(cache::MAX_FILES)
+
+      5.times { expect(cache.lines("/app/file-0.rb")).to eq([ "line of /app/file-0.rb" ]) }
+      expect(cache).to have_received(:read_lines).exactly(cache::MAX_FILES).times
+      expect(cached_paths.size).to eq(cache::MAX_FILES)
+      expect(cached_paths.first).to eq("/app/file-0.rb")
+    end
+
+    it "reads another file while a slow read is in progress" do
+      started = Queue.new
+      release = Queue.new
+      allow(cache).to receive(:read_lines) do |path|
+        if path == "/app/slow.rb"
+          started << true
+          release.pop(timeout: wait)
+        end
+        [ "line of #{path}" ]
+      end
+
+      slow = Thread.new { cache.lines("/app/slow.rb") }
+      expect(started.pop(timeout: wait)).to be(true)
+
+      fast = Thread.new { cache.lines("/app/fast.rb") }
+      expect(fast.join(wait)&.value).to eq([ "line of /app/fast.rb" ])
+      expect(slow).to be_alive # the slow read is still blocked: the fast one did not wait for it
+
+      release << true
+      expect(slow.join(wait)&.value).to eq([ "line of /app/slow.rb" ])
+      expect(cached_paths).to contain_exactly("/app/slow.rb", "/app/fast.rb")
+    ensure
+      release&.push(true)
+      finish(slow, fast)
+    end
+
+    it "evicts only once when two threads read the same new file of a full cache" do
+      stub_reads
+      fill(cache::MAX_FILES)
+      reading = Queue.new
+      release = Queue.new
+      allow(cache).to receive(:read_lines) do |path|
+        reading << path
+        release.pop(timeout: wait)
+        [ "#{path} read by #{Thread.current.object_id}" ]
+      end
+
+      threads = Array.new(2) { Thread.new { cache.lines("/app/new.rb") } }
+      2.times { expect(reading.pop(timeout: wait)).to eq("/app/new.rb") } # both missed: both read
+      2.times { release << true }
+      results = threads.map { |thread| thread.join(wait)&.value }
+
+      expect(results.compact.size).to eq(2)
+      expect(results.uniq.size).to eq(1) # the later store keeps the entry already saved
+      expect(cached_paths.size).to eq(cache::MAX_FILES)
+      expect(cached_paths.first).to eq("/app/file-1.rb") # only file-0 was evicted
+      expect(cached_paths.last).to eq("/app/new.rb")
+    ensure
+      2.times { release&.push(true) }
+      finish(*threads)
     end
   end
 
