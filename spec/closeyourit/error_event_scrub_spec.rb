@@ -77,4 +77,37 @@ RSpec.describe "ErrorEvent — message scrubbing" do
       end)
     end
   end
+
+  # CYRB-43 — a context or extra holding itself used to raise SystemStackError out of
+  # capture_exception (no StandardError net catches it): the host app got that instead of its error.
+  describe "self-referencing context (CYRB-43)" do
+    after { CloseYourIt.clear_scope }
+
+    before do
+      CloseYourIt.init do |c|
+        c.endpoint_url = "https://closeyour.it"
+        c.token = "tok"
+        c.project_id = "proj-1"
+        c.async_threads = 0
+      end
+    end
+
+    it "sends the error with [Circular] in place of the self-reference" do
+      cart = { "items" => 2, "token" => "secret-value" }
+      cart["cart"] = cart
+      CloseYourIt.set_context(:checkout, cart)
+      CloseYourIt.set_extra(:cart, cart)
+      url = "https://closeyour.it/api/v1/projects/proj-1/events"
+      stub_request(:post, url)
+
+      expect { CloseYourIt.capture_exception(RuntimeError.new("payment failed")) }.not_to raise_error
+
+      expected = { "items" => 2, "token" => "[FILTERED]", "cart" => "[Circular]" }
+      expect(WebMock).to(have_requested(:post, url).with do |req|
+        body = JSON.parse(req.body)
+        # set_context copies the top level (stringified keys): the copy holds the original once.
+        body["contexts"]["checkout"] == expected.merge("cart" => expected) && body["extra"]["cart"] == expected
+      end)
+    end
+  end
 end

@@ -53,6 +53,27 @@ RSpec.describe "CloseYourIt.log (structured logging)" do
     }
   end
 
+  # CYRB-43 — the self-reference used to raise SystemStackError on flush, past the buffer's
+  # StandardError net, into the app and taking the other buffered logs with it.
+  it "sends a self-referencing attribute as [Circular] together with the other logs" do
+    enable!(logs_batch_size: 3)
+    stub_request(:post, url)
+    order = { "id" => 7 }
+    order["self"] = order
+
+    expect do
+      CloseYourIt.log(:info, "before")
+      CloseYourIt.log(:info, "cyclic", order: order)
+      CloseYourIt.log(:info, "after")
+    end.not_to raise_error
+
+    expect(WebMock).to have_requested(:post, url).with { |req|
+      body = JSON.parse(req.body)
+      body.map { |entry| entry["message"] } == %w[before cyclic after] &&
+        body[1]["attributes"] == { "order" => { "id" => 7, "self" => "[Circular]" } }
+    }
+  end
+
   it "is a no-op when the gem is disabled" do
     stub = stub_request(:post, url)
     CloseYourIt.log(:info, "x")

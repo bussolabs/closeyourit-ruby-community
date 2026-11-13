@@ -117,6 +117,31 @@ RSpec.describe CloseYourIt::LogEvent do
     expect(event.to_h["message"]).to eq("login with password [FILTERED]")
   end
 
+  # CYRB-43 — key stringification walked the attributes before the Scrubber and recursed forever
+  # on a container holding itself.
+  it "replaces a self-reference in the attributes with [Circular]" do
+    order = { id: 7, password: "hunter2" }
+    order[:self] = order
+    list = [ order ]
+    list << list
+
+    attributes = described_class.new("x", level: :info, attributes: { order: order, list: list },
+                                          configuration: config).to_h["attributes"]
+
+    expect(attributes["order"]).to eq("id" => 7, "password" => "[FILTERED]", "self" => "[Circular]")
+    expect(attributes["list"]).to eq(
+      [ { "id" => 7, "password" => "[FILTERED]", "self" => "[Circular]" }, "[Circular]" ]
+    )
+  end
+
+  it "keeps attributes repeated without a cycle whole" do
+    shared = { city: "Rome" }
+    payload = described_class.new("x", level: :info, attributes: { from: shared, to: [ shared ] },
+                                       configuration: config).to_h
+
+    expect(payload["attributes"]).to eq("from" => { "city" => "Rome" }, "to" => [ { "city" => "Rome" } ])
+  end
+
   it "freezes the trace_id at construction: a later scope change (cross-thread flush) does not alter it" do
     config
     CloseYourIt::Scope.current.trace_id = "trace-construction"

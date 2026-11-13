@@ -79,6 +79,10 @@ module CloseYourIt
     # any other one (Latin-1, Shift_JIS…) is transcoded.
     RAW_ENCODINGS = [ Encoding::UTF_8, Encoding::BINARY, Encoding::US_ASCII ].freeze
 
+    # CYRB-43 — what a reference back to a container still being visited becomes. Same placeholder
+    # as the JavaScript and Python SDKs, so the panel shows the same thing whatever the SDK.
+    CIRCULAR = "[Circular]"
+
     def initialize(configuration)
       @configuration = configuration
     end
@@ -86,17 +90,25 @@ module CloseYourIt
     # Recursively filters Hash/Array replacing the values of sensitive keys. Every string (keys too)
     # comes out as valid UTF-8 (see #utf8): a binary attribute or tag no longer makes JSON.generate
     # raise on the whole batch it travels with (CYRB-32).
+    # A container that holds itself (directly or further down) becomes CIRCULAR instead of recursing
+    # until SystemStackError, which no `rescue StandardError` net catches (CYRB-43).
     def filter_params(value)
-      case value
-      when Hash
-        value.each_with_object({}) do |(key, val), acc|
-          key = utf8(key)
-          acc[key] = sensitive_key?(key) ? FILTERED : filter_params(val)
-        end
-      when Array
-        value.map { |item| filter_params(item) }
-      else
-        utf8(value)
+      filter_node(value, {}.compare_by_identity)
+    end
+
+    # Runs the block on a Hash/Array with `container` marked as open in `visiting`, or returns
+    # CIRCULAR when it is already open, i.e. we are inside it: a cycle. `visiting` compares by
+    # IDENTITY (two equal but distinct hashes are not a cycle) and holds only the current path: the
+    # container leaves it once visited, so the same object repeated in two places comes out whole
+    # both times. Shared with LogEvent, whose key stringification walks the same data first.
+    def self.walk(container, visiting)
+      return CIRCULAR if visiting.key?(container)
+
+      visiting[container] = true
+      begin
+        yield
+      ensure
+        visiting.delete(container)
       end
     end
 
@@ -142,6 +154,22 @@ module CloseYourIt
     end
 
     private
+
+    def filter_node(value, visiting)
+      case value
+      when Hash
+        Scrubber.walk(value, visiting) do
+          value.each_with_object({}) do |(key, val), acc|
+            key = utf8(key)
+            acc[key] = sensitive_key?(key) ? FILTERED : filter_node(val, visiting)
+          end
+        end
+      when Array
+        Scrubber.walk(value, visiting) { value.map { |item| filter_node(item, visiting) } }
+      else
+        utf8(value)
+      end
+    end
 
     def sensitive_key?(key)
       normalized = normalize(key)

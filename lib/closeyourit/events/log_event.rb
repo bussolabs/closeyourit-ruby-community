@@ -68,14 +68,20 @@ module CloseYourIt
     def scrubbed_attributes
       return {} if @attributes.nil? || @attributes.empty?
 
-      @scrubber.filter_params(deep_stringify_keys(@attributes))
+      @scrubber.filter_params(deep_stringify_keys(@attributes, {}.compare_by_identity))
     end
 
     # Keys always strings (nested too): consistent with the JSON payload and the Scrubber denylist.
-    def deep_stringify_keys(value)
+    # A container holding itself becomes Scrubber::CIRCULAR, as in the Scrubber (CYRB-43): the copy
+    # built here has no cycle left, so the Scrubber that follows walks a finite tree.
+    def deep_stringify_keys(value, visiting)
       case value
-      when Hash  then value.each_with_object({}) { |(key, val), acc| acc[key.to_s] = deep_stringify_keys(val) }
-      when Array then value.map { |item| deep_stringify_keys(item) }
+      when Hash
+        Scrubber.walk(value, visiting) do
+          value.each_with_object({}) { |(key, val), acc| acc[key.to_s] = deep_stringify_keys(val, visiting) }
+        end
+      when Array
+        Scrubber.walk(value, visiting) { value.map { |item| deep_stringify_keys(item, visiting) } }
       else value
       end
     end

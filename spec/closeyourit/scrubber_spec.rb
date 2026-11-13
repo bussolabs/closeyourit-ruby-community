@@ -59,6 +59,49 @@ RSpec.describe CloseYourIt::Scrubber do
     end
   end
 
+  # CYRB-43 — a container that holds itself used to recurse until SystemStackError, which escapes
+  # every `rescue StandardError` net and reached the host app instead of its original error.
+  describe "#filter_params on self-referencing data (CYRB-43)" do
+    it "replaces the reference back to a hash being visited with [Circular]" do
+      data = { "name" => "order" }
+      data["self"] = data
+
+      expect(scrubber.filter_params(data)).to eq("name" => "order", "self" => "[Circular]")
+    end
+
+    it "detects a cycle further down and through arrays" do
+      parent = { "id" => 1 }
+      list = [ parent ]
+      parent["children"] = [ { "parent" => parent } ]
+      list << list
+
+      expect(scrubber.filter_params(list)).to eq(
+        [ { "id" => 1, "children" => [ { "parent" => "[Circular]" } ] }, "[Circular]" ]
+      )
+    end
+
+    it "keeps an object repeated twice without a cycle whole both times" do
+      shared = { "city" => "Rome", "tags" => [ "a" ] }
+      # Not `shipping`: it contains the denylisted `pin` and would be redacted, hiding the check.
+      out = scrubber.filter_params("billing" => shared, "delivery" => shared, "list" => [ shared, shared ])
+
+      expect(out).to eq(
+        "billing" => shared, "delivery" => shared, "list" => [ shared, shared ]
+      )
+      expect(out.to_s).not_to include("[Circular]")
+    end
+
+    it "still redacts sensitive keys next to the cycle" do
+      data = { "password" => "hunter2", "user" => "mario" }
+      data["self"] = data
+
+      out = scrubber.filter_params(data)
+
+      expect(out).to eq("password" => "[FILTERED]", "user" => "mario", "self" => "[Circular]")
+      expect { JSON.generate(out) }.not_to raise_error
+    end
+  end
+
   # R1 — the denylist must cover the same tokens as the backend and Dart client regex:
   #   /pass|secret|token|api[_-]?key|apikey|authorization|cookie|csrf|credit|card|cvv|ssn|iban/i
   # In particular the `pass*` ones (pass, pass_code, passkey, passphrase) the literal list omitted.

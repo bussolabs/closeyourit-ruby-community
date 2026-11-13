@@ -7,6 +7,12 @@ e il progetto aderisce al [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [0.15.2] - 2026-11-13
+
+### Corretto
+
+- **Un dato che contiene se stesso non manda più in errore l'app.** Prima un contesto, un dato extra, una traccia o un log con un rimando a se stesso facevano girare la pulizia all'infinito: l'app riceveva quell'errore al posto del suo e i log in attesa andavano persi. Ora il rimando diventa `[Circular]`, come nelle librerie per JavaScript e Python; i campi riservati restano oscurati e un oggetto solo ripetuto esce completo. (CYRB-43)
+
 ## [0.15.1] - 2026-11-11
 
 ### Corretto
