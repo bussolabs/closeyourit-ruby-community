@@ -32,9 +32,15 @@ module CloseYourIt
       accepted
     end
 
+    # True with `threads == 0`: the block runs on the caller's thread, so nothing in it may wait.
+    def synchronous?
+      @executor.is_a?(Concurrent::ImmediateExecutor)
+    end
+
     # Drains the queue waiting up to `timeout` seconds. The default is the duration cap of ONE POST
     # (Transport::MAX_REQUEST_SECONDS): waiting less abandons still healthy sends, which is what
-    # happened with the old fixed one second (CYRB-24). If the drain expires, the tasks left in the
+    # happened with the old fixed one second (CYRB-24). Retries do not stretch it: Client#shutdown
+    # stops them first (CYRB-44). If the drain expires, the tasks left in the
     # queue are lost: count them as `dropped`, otherwise the end-of-life snapshot reports zero losses.
     def shutdown(timeout = Transport::MAX_REQUEST_SECONDS)
       return unless @executor.respond_to?(:shutdown)

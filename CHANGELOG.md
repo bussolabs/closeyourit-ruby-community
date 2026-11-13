@@ -7,6 +7,12 @@ e il progetto aderisce al [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [0.15.3] - 2026-11-13
+
+### Aggiunto
+
+- **Un server occupato non fa più perdere le segnalazioni.** Se il server è occupato o ha un problema passeggero, l'invio viene ripetuto al massimo 2 volte, con attese brevi che rispettano quanto chiesto dal server e non superano mai 5 secondi. Un rifiuto definitivo, come dati sbagliati o credenziali errate, resta scartato subito. Senza processi in secondo piano non si riprova, e alla chiusura del programma un'attesa in corso si interrompe: l'app non rallenta. Il nuovo contatore `retried` mostra quanti tentativi sono stati ripetuti. (CYRB-44)
+
 ## [0.15.2] - 2026-11-13
 
 ### Corretto

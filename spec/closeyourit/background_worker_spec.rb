@@ -115,4 +115,55 @@ RSpec.describe CloseYourIt::BackgroundWorker do
       gate << :go
     end
   end
+
+  it "reports synchronous only with threads == 0" do
+    expect(described_class.new(threads: 0).synchronous?).to be(true)
+    pooled = described_class.new(threads: 1)
+    expect(pooled.synchronous?).to be(false)
+  ensure
+    pooled&.shutdown
+  end
+
+  # CYRB-44 — a send waiting for its next retry must not stretch process exit: the wait ends at
+  # once, no new attempt starts and the send counts as failed.
+  describe "#shutdown with a send waiting for a retry (CYRB-44)" do
+    let(:url) { "https://closeyour.it/api/v1/projects/proj-1/events" }
+
+    # No real timer: the wait is made endless (it never expires on its own), so only the shutdown
+    # can end it. The test learns from inside #pause that the wait has begun, and reads back what
+    # #pause returned: true means interrupted.
+    it "interrupts the wait and starts no new attempt" do
+      waiting = Queue.new
+      outcomes = []
+      transport = nil
+      allow(CloseYourIt::Transport).to receive(:new).and_wrap_original do |build, *args, **options|
+        transport = build.call(*args, **options)
+        allow(transport).to receive(:pause).and_wrap_original do |pause, seconds|
+          waiting << seconds
+          pause.call(nil).tap { |interrupted| outcomes << interrupted }
+        end
+        transport
+      end
+      CloseYourIt.init do |c|
+        c.endpoint_url = "https://closeyour.it"
+        c.token = "tok"
+        c.project_id = "proj-1"
+        c.async_threads = 1
+      end
+      allow(CloseYourIt.internal_logger).to receive(:warn)
+      stub_request(:post, url).to_return(status: 503, headers: { "Retry-After" => "5" })
+      client = CloseYourIt.send(:client)
+
+      CloseYourIt.capture_message("busy server")
+      expect(waiting.pop).to eq(5.0) # the send is now inside the wait for its first retry
+
+      expect { client.shutdown }
+        .to change { CloseYourIt.stats[:failed] }.by(1)
+        .and change { CloseYourIt.stats[:retried] }.by(0)
+      expect(outcomes).to eq([ true ])
+      expect(a_request(:post, url)).to have_been_made.once
+    ensure
+      transport&.stop_retries! # never leave a worker thread waiting if the assertions failed
+    end
+  end
 end

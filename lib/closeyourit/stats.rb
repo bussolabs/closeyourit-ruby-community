@@ -7,11 +7,13 @@ module CloseYourIt
   # before_send / sampling), sent successfully, failed (network or non-2xx status) and, among the
   # failed, how many by network timeout. They make the silent failures of the fire-and-forget
   # transport visible. `timeout` is a sub-count of `failed` (a timeout is still a send failure):
-  # we keep them apart to isolate connectivity problems from non-2xx.
+  # we keep them apart to isolate connectivity problems from non-2xx. `retried` counts the extra
+  # attempts made after a transient failure (CYRB-44): an event lost after its retries is still ONE
+  # `failed`.
   #
-  #   CloseYourIt.stats.to_h # => { enqueued: 12, dropped: 0, sent: 11, failed: 1, timeout: 1 }
+  #   CloseYourIt.stats.to_h # => { enqueued: 12, dropped: 0, sent: 11, failed: 1, timeout: 1, retried: 3 }
   class Stats
-    COUNTERS = %i[enqueued dropped sent failed timeout].freeze
+    COUNTERS = %i[enqueued dropped sent failed timeout retried].freeze
 
     def initialize
       @counters = COUNTERS.to_h { |name| [ name, Concurrent::AtomicFixnum.new(0) ] }

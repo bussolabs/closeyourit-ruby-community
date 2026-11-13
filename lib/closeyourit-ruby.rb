@@ -295,14 +295,14 @@ module CloseYourIt
       nil
     end
 
-    # Client diagnostic counters (enqueued/dropped/sent/failed/timeout).
-    #   CloseYourIt.stats.to_h # => { enqueued: …, dropped: …, sent: …, failed: …, timeout: … }
+    # Client diagnostic counters (enqueued/dropped/sent/failed/timeout/retried).
+    #   CloseYourIt.stats.to_h # => { enqueued: …, dropped: …, sent: …, failed: …, timeout: …, retried: … }
     def stats
       @stats ||= Stats.new
     end
 
     # Notifies a stage of an event's lifecycle to the `on_diagnostic` hook (if configured).
-    # `event` is one of :enqueue, :send, :drop, :timeout, :shutdown; `details` a Hash free of
+    # `event` is one of :enqueue, :send, :retry, :drop, :timeout, :shutdown; `details` a Hash free of
     # sensitive data (e.g. `{ reason: :queue_full }`, `{ status: 429 }`). Called by Client/Transport/
     # BackgroundWorker/LogBuffer. Guarantees (CYRB-12):
     #   * it does NOT send telemetry: it only touches the app hook and the in-memory counters;

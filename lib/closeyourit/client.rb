@@ -13,11 +13,13 @@ module CloseYourIt
 
     def initialize(configuration)
       @configuration = configuration
-      @transport = Transport.new(configuration)
       @worker = BackgroundWorker.new(
         threads: configuration.async_threads,
         max_queue: configuration.background_worker_max_queue
       )
+      # A synchronous worker sends on the app's thread: no retry there, a wait would slow the app
+      # down (CYRB-44).
+      @transport = Transport.new(configuration, retries: @worker.synchronous? ? 0 : Transport::MAX_RETRIES)
     end
 
     def capture_event(event)
@@ -86,7 +88,10 @@ module CloseYourIt
       payload
     end
 
+    # Retries stop BEFORE the drain: a pending wait ends at once, so the drain lasts what it did
+    # without retries (CYRB-44).
     def shutdown
+      @transport.stop_retries!
       @worker.shutdown(@configuration.shutdown_timeout)
     end
 

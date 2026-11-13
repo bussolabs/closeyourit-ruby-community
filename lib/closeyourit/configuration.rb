@@ -89,7 +89,7 @@ module CloseYourIt
       @before_send             = nil
 
       # Opt-in diagnostic hook: `->(event, details) { ... }` called at every stage of an event's
-      # lifecycle (:enqueue, :send, :drop, :timeout, :shutdown) with details free of sensitive data
+      # lifecycle (:enqueue, :send, :retry, :drop, :timeout, :shutdown) with details free of sensitive data
       # (e.g. `{ reason: :queue_full }`, `{ status: 429 }`). Local and non-recursive: it sends no
       # telemetry and cannot trigger self-monitoring loops (see CloseYourIt.notify_diagnostic, CYRB-12).
       @on_diagnostic = nil
@@ -97,7 +97,8 @@ module CloseYourIt
       @async_threads               = default_threads
       @background_worker_max_queue  = 30
       # How long to wait, on process exit, for in-flight sends to complete. Default: the duration cap
-      # of ONE POST, so the last batch is not abandoned halfway (CYRB-24).
+      # of ONE POST, so the last batch is not abandoned halfway (CYRB-24). Retries do not lengthen it:
+      # on exit a pending retry wait is interrupted and no new attempt starts (CYRB-44).
       # Lower it if process exit must be faster than delivery.
       @shutdown_timeout = Transport::MAX_REQUEST_SECONDS
 

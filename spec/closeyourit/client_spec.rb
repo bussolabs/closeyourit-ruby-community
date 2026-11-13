@@ -59,6 +59,41 @@ RSpec.describe CloseYourIt::Client do
     expect { client.shutdown }.not_to raise_error
   end
 
+  # CYRB-44 — retries only off the app's thread: a synchronous worker would make the app wait.
+  describe "retries and the worker mode (CYRB-44)" do
+    let(:url) { "https://closeyour.it/api/v1/projects/proj-1/events" }
+
+    it "never retries nor waits with a synchronous worker (async_threads 0)" do
+      allow(CloseYourIt.internal_logger).to receive(:warn)
+      stub_request(:post, url).to_return(status: 503)
+
+      expect { client.capture_event(event) }.to change { CloseYourIt.stats[:retried] }.by(0)
+        .and change { CloseYourIt.stats[:failed] }.by(1)
+      expect(a_request(:post, url)).to have_been_made.once
+    end
+
+    it "gives the transport MAX_RETRIES with background threads" do
+      config.async_threads = 1
+      allow(CloseYourIt::Transport).to receive(:new).and_call_original
+
+      pooled = described_class.new(config)
+
+      expect(CloseYourIt::Transport).to have_received(:new)
+        .with(config, retries: CloseYourIt::Transport::MAX_RETRIES)
+    ensure
+      pooled&.shutdown
+    end
+
+    it "stops the retries before draining the worker on shutdown" do
+      transport = instance_double(CloseYourIt::Transport, stop_retries!: nil)
+      allow(CloseYourIt::Transport).to receive(:new).and_return(transport)
+
+      client.shutdown
+
+      expect(transport).to have_received(:stop_retries!)
+    end
+  end
+
   # CYRB-2 — capture_event is called inside the sql.active_record subscriber, i.e. on the host
   # query's thread. to_h (scrubber on a malformed bind) and before_send are evaluated SYNCHRONOUSLY
   # here: if they raise, the exception would bubble up into the host query's path. Telemetry must never

@@ -116,6 +116,7 @@ RSpec.describe "CloseYourIt — transport recovery after a fork (CYRB-11)" do
           delivered = Thread::Queue.new
           fake_transport = Object.new
           fake_transport.define_singleton_method(:send_event) { |_payload, path:| delivered << path }
+          fake_transport.define_singleton_method(:stop_retries!) { nil }
           child_client.instance_variable_set(:@transport, fake_transport)
 
           result[:new_client] = !child_client.equal?(parent_client)

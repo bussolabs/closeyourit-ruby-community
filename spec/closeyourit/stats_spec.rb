@@ -4,7 +4,7 @@ RSpec.describe CloseYourIt::Stats do
   subject(:stats) { described_class.new }
 
   it "starts at zero on every counter" do
-    expect(stats.to_h).to eq(enqueued: 0, dropped: 0, sent: 0, failed: 0, timeout: 0)
+    expect(stats.to_h).to eq(enqueued: 0, dropped: 0, sent: 0, failed: 0, timeout: 0, retried: 0)
   end
 
   it "increments and returns the new value" do
@@ -16,7 +16,7 @@ RSpec.describe CloseYourIt::Stats do
   it "keeps independent counters" do
     stats.increment(:enqueued)
     stats.increment(:failed)
-    expect(stats.to_h).to eq(enqueued: 1, dropped: 0, sent: 0, failed: 1, timeout: 0)
+    expect(stats.to_h).to eq(enqueued: 1, dropped: 0, sent: 0, failed: 1, timeout: 0, retried: 0)
   end
 
   it "counts timeouts separately from generic failures" do
@@ -27,14 +27,14 @@ RSpec.describe CloseYourIt::Stats do
 
   it "resets with reset!" do
     stats.increment(:dropped)
-    expect(stats.reset!.to_h).to eq(enqueued: 0, dropped: 0, sent: 0, failed: 0, timeout: 0)
+    expect(stats.reset!.to_h).to eq(enqueued: 0, dropped: 0, sent: 0, failed: 0, timeout: 0, retried: 0)
   end
 
   it "exposes a thread-safe snapshot equal to to_h" do
     stats.increment(:sent)
     stats.increment(:timeout)
     expect(stats.snapshot).to eq(stats.to_h)
-    expect(stats.snapshot).to eq(enqueued: 0, dropped: 0, sent: 1, failed: 0, timeout: 1)
+    expect(stats.snapshot).to eq(enqueued: 0, dropped: 0, sent: 1, failed: 0, timeout: 1, retried: 0)
   end
 
   it "raises on an unknown counter" do

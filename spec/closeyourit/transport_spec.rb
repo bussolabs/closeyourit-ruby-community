@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+RSpec::Matchers.define_negated_matcher :not_change, :change
+
 RSpec.describe CloseYourIt::Transport do
   subject(:transport) { described_class.new(config) }
 
@@ -225,5 +227,206 @@ RSpec.describe CloseYourIt::Transport do
     transport.send_event({ "level" => "error" }, path: path)
 
     expect(CloseYourIt.internal_logger).to have_received(:warn).with(/R422-INGEST-001: Malformed event/)
+  end
+
+  # CYRB-44 — a busy server or a passing failure is retried (at most MAX_RETRIES more attempts), a
+  # final refusal never is. Waits are not real: #pause is stubbed and records the requested delays.
+  describe "retries on transient failures (CYRB-44)" do
+    subject(:transport) do
+      described_class.new(config, retries: described_class::MAX_RETRIES, random: random).tap do |t|
+        allow(t).to receive(:pause) { |seconds| waits << seconds && false }
+      end
+    end
+
+    let(:random) { instance_double(Random, rand: 0.5) }
+    let(:waits) { [] }
+    let(:seen) { [] }
+
+    before do
+      allow(CloseYourIt.internal_logger).to receive(:warn)
+      allow(CloseYourIt.internal_logger).to receive(:error)
+      CloseYourIt.init do |c|
+        c.endpoint_url = "https://closeyour.it"
+        c.token = "tok"
+        c.project_id = "proj-1"
+        c.on_diagnostic = ->(event, details) { seen << [ event, details ] }
+      end
+    end
+
+    it "delivers on the next attempt when the server was busy" do
+      stub_request(:post, url).to_return({ status: 503 }, { status: 202 })
+
+      expect { transport.send_event({ "level" => "error" }, path: path) }
+        .to change { CloseYourIt.stats[:sent] }.by(1)
+        .and change { CloseYourIt.stats[:retried] }.by(1)
+        .and(not_change { CloseYourIt.stats[:failed] })
+      expect(a_request(:post, url)).to have_been_made.twice
+    end
+
+    it "makes 3 attempts in all against a server that stays in error, then counts ONE failure" do
+      stub_request(:post, url).to_return(status: 500)
+
+      expect { transport.send_event({ "level" => "error" }, path: path) }
+        .to change { CloseYourIt.stats[:failed] }.by(1)
+        .and change { CloseYourIt.stats[:retried] }.by(2)
+      expect(a_request(:post, url)).to have_been_made.times(3)
+      expect(seen.count { |event, _| event == :drop }).to eq(1)
+    end
+
+    it "waits a short doubling delay with jitter between attempts" do
+      stub_request(:post, url).to_return(status: 502)
+
+      transport.send_event({ "level" => "error" }, path: path)
+
+      # base 1s then 2s, plus rand (0.5) × base.
+      expect(waits).to eq([ 1.5, 3.0 ])
+    end
+
+    it "never waits more than MAX_RETRY_DELAY, jitter included" do
+      allow(random).to receive(:rand).and_return(0.99)
+      stub_request(:post, url).to_return(status: 503)
+      transport.send_event({ "level" => "error" }, path: path)
+
+      expect(waits).to eq([ 1.99, 3.98 ])
+      expect(waits.max).to be <= described_class::MAX_RETRY_DELAY
+      expect(described_class::MAX_RETRY_DELAY).to eq(5.0)
+    end
+
+    it "honors the server's Retry-After in seconds" do
+      stub_request(:post, url).to_return({ status: 429, headers: { "Retry-After" => "1" } }, { status: 202 })
+
+      transport.send_event({ "level" => "error" }, path: path)
+
+      expect(waits).to eq([ 1.0 ])
+    end
+
+    it "caps a Retry-After longer than 5 seconds at 5" do
+      stub_request(:post, url).to_return({ status: 503, headers: { "Retry-After" => "120" } }, { status: 202 })
+
+      transport.send_event({ "level" => "error" }, path: path)
+
+      expect(waits).to eq([ 5.0 ])
+    end
+
+    it "honors a Retry-After given as an HTTP date" do
+      stub_request(:post, url).to_return(
+        { status: 503, headers: { "Retry-After" => (Time.now + 3).httpdate } }, { status: 202 }
+      )
+
+      transport.send_event({ "level" => "error" }, path: path)
+
+      expect(waits.first).to be_between(1.0, 3.0)
+    end
+
+    it "falls back to its own delay when Retry-After is unreadable" do
+      stub_request(:post, url).to_return({ status: 503, headers: { "Retry-After" => "soon" } }, { status: 202 })
+
+      transport.send_event({ "level" => "error" }, path: path)
+
+      expect(waits).to eq([ 1.5 ])
+    end
+
+    it "retries 408, 425 and 429 as \"not now\" statuses" do
+      [ 408, 425, 429 ].each do |status|
+        stub_request(:post, url).to_return({ status: status }, { status: 202 })
+
+        expect { transport.send_event({ "level" => "error" }, path: path) }
+          .to change { CloseYourIt.stats[:sent] }.by(1)
+      end
+    end
+
+    it "never retries a final refusal: bad data, bad token, unknown project" do
+      [ 400, 401, 404, 422 ].each do |status|
+        stub_request(:post, url).to_return(status: status)
+
+        expect { transport.send_event({ "level" => "error" }, path: path) }
+          .to change { CloseYourIt.stats[:failed] }.by(1)
+          .and(not_change { CloseYourIt.stats[:retried] })
+      end
+      expect(a_request(:post, url)).to have_been_made.times(4)
+      expect(waits).to be_empty
+    end
+
+    it "does not retry a refused redirect" do
+      stub_request(:post, url).to_return(status: 301, headers: { "Location" => "https://evil.example#{path}" })
+
+      transport.send_event({ "level" => "error" }, path: path)
+
+      expect(a_request(:post, url)).to have_been_made.once
+    end
+
+    it "retries a network error and a timeout" do
+      stub_request(:post, url).to_raise(Errno::ECONNREFUSED).then.to_timeout.then.to_return(status: 202)
+
+      expect { transport.send_event({ "level" => "error" }, path: path) }
+        .to change { CloseYourIt.stats[:sent] }.by(1)
+        .and change { CloseYourIt.stats[:retried] }.by(2)
+      expect(seen.select { |event, _| event == :retry }.map { |_, details| details[:reason] })
+        .to eq(%i[network timeout])
+    end
+
+    it "counts a send lost to timeouts as ONE failure and ONE timeout" do
+      stub_request(:post, url).to_timeout
+
+      expect { transport.send_event({ "level" => "error" }, path: path) }
+        .to change { CloseYourIt.stats[:failed] }.by(1)
+        .and change { CloseYourIt.stats[:timeout] }.by(1)
+        .and change { CloseYourIt.stats[:retried] }.by(2)
+    end
+
+    it "notifies every retry with its reason, free of the payload" do
+      stub_request(:post, url).to_return({ status: 503 }, { status: 202 })
+
+      transport.send_event({ "level" => "error" }, path: path)
+
+      expect(seen).to include([ :retry, { attempt: 1, delay: 1.5, reason: :response, status: 503 } ])
+    end
+
+    it "does not retry at all with retries: 0 (synchronous worker)" do
+      sync = described_class.new(config)
+      allow(sync).to receive(:pause)
+      stub_request(:post, url).to_return(status: 503)
+
+      expect { sync.send_event({ "level" => "error" }, path: path) }
+        .to change { CloseYourIt.stats[:failed] }.by(1)
+        .and(not_change { CloseYourIt.stats[:retried] })
+      expect(sync).not_to have_received(:pause)
+      expect(a_request(:post, url)).to have_been_made.once
+    end
+
+    it "stops at once when the process exits during the wait: no new attempt" do
+      allow(transport).to receive(:pause).and_return(true) # the wait was interrupted
+      stub_request(:post, url).to_return(status: 503)
+
+      expect { transport.send_event({ "level" => "error" }, path: path) }
+        .to change { CloseYourIt.stats[:failed] }.by(1)
+        .and(not_change { CloseYourIt.stats[:retried] }) # the cancelled attempt is not counted
+      expect(a_request(:post, url)).to have_been_made.once
+    end
+
+    it "starts no retry once stop_retries! was called" do
+      transport.stop_retries!
+      stub_request(:post, url).to_return(status: 503)
+
+      transport.send_event({ "level" => "error" }, path: path)
+
+      expect(a_request(:post, url)).to have_been_made.once
+      expect(waits).to be_empty
+    end
+
+    it "reports a wait as interrupted once stop_retries! was called" do
+      real = described_class.new(config, retries: 1)
+      real.stop_retries!
+
+      # No clock involved: a wait that ran to its end would return false.
+      expect(real.send(:pause, 5)).to be(true)
+    end
+
+    it "does not retry a payload that cannot be encoded" do
+      transport.send_event({ "bad" => Float::NAN }, path: path)
+
+      expect(a_request(:post, url)).not_to have_been_made
+      expect(waits).to be_empty
+    end
   end
 end
