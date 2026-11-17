@@ -154,6 +154,93 @@ RSpec.describe CloseYourIt::Rails::ActiveJobExtension do
     expect(stub).to have_been_requested.once
   end
 
+  # --- CYRB-35: a frozen error must reach the job system unchanged and be reported once ---
+
+  it "re-raises the very same frozen error to the job system and reports it (legacy fallback)" do
+    enable!
+    stub = stub_request(:post, url)
+    frozen = RuntimeError.new("frozen job").freeze
+
+    expect { described_class.monitor(DummyJob.new) { raise frozen } }
+      .to raise_error { |error| expect(error).to equal(frozen) }
+
+    expect(stub).to have_been_requested.once
+  end
+
+  # Backtrace set BEFORE freezing, frozen while propagating: the job system must get this very
+  # instance back, message and backtrace intact, and the gem must report it once.
+  it "lets the very same frozen error with a backtrace through to the job system (legacy fallback)" do
+    enable!
+    stub = stub_request(:post, url)
+    original = RuntimeError.new("frozen job with backtrace")
+    original.set_backtrace(caller_locations)
+    backtrace = original.backtrace.dup
+    work = lambda do
+      raise original
+    ensure
+      original.freeze
+    end
+
+    expect { described_class.monitor(DummyJob.new) { work.call } }.to raise_error { |error|
+      expect(error).to equal(original)
+      expect(error).to be_frozen
+      expect(error.message).to eq("frozen job with backtrace")
+      expect(error.backtrace).to eq(backtrace)
+    }
+    expect(backtrace).not_to be_empty
+    expect(stub).to have_been_requested.once
+  end
+
+  it "modern job: the very same frozen error with a backtrace re-raises unchanged, reported once on discard" do
+    enable!
+    stub = stub_request(:post, url)
+    job = RetryingJob.new(attempts: 1, failures: 99)
+    original = RuntimeError.new("frozen retry with backtrace")
+    original.set_backtrace(caller_locations)
+    backtrace = original.backtrace.dup
+    work = lambda do
+      raise original
+    ensure
+      original.freeze
+    end
+
+    expect { described_class.monitor(job) { work.call } }.to raise_error { |error|
+      expect(error).to equal(original)
+      expect(error.backtrace).to eq(backtrace)
+    }
+    described_class.report_discarded(job, original)
+
+    expect(stub).to have_been_requested.once
+  end
+
+  it "dedups a frozen error captured by rack and then by the job (a single send)" do
+    enable!
+    stub = stub_request(:post, url)
+    frozen = RuntimeError.new("frozen dup").freeze
+
+    CloseYourIt.capture_exception(frozen) # "rack" capture
+    expect { described_class.monitor(DummyJob.new) { raise frozen } }
+      .to raise_error { |error| expect(error).to equal(frozen) }
+
+    expect(stub).to have_been_requested.once
+  end
+
+  it "modern job: a frozen error re-raises unchanged on each attempt and is reported once on discard" do
+    enable!
+    stub = stub_request(:post, url)
+    job = RetryingJob.new(attempts: 2, failures: 99)
+    frozen = RuntimeError.new("frozen retry").freeze
+
+    2.times do
+      expect { described_class.monitor(job) { raise frozen } }
+        .to raise_error { |error| expect(error).to equal(frozen) }
+    end
+    described_class.report_discarded(job, frozen)
+    described_class.report_discarded(job, frozen) # a second discard path must not resend it
+
+    expect(stub).to have_been_requested.once
+  end
+
   # --- CYRB-19: a retried error must not be reported once per attempt ---
 
   describe "wiring (self.included)" do

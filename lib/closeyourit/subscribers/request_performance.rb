@@ -14,6 +14,20 @@ module CloseYourIt
         @configuration = configuration
       end
 
+      # Body of the Railtie's process_action.action_controller listener: route usage (CYSK-29) + the
+      # performance verdicts. It runs on the request's thread, and ActiveSupport::Notifications
+      # re-raises a subscriber's error into the request: a fault here (usage registry, rollup) would
+      # break a response that already succeeded. Absorbed and logged, like the other listeners (CYRB-35).
+      def process_action(payload, duration_ms)
+        # The route is `Controller#action`, NEVER the URL. The usage_enabled gate lives inside #record.
+        route = "#{payload[:controller]}##{payload[:action]}"
+        CloseYourIt.usage_registry.record("route", route) if CloseYourIt.enabled?
+        record(route: route, duration_ms: duration_ms)
+      rescue StandardError => e
+        CloseYourIt.internal_log(:warn, "CloseYourIt request observation failed: #{e.class}: #{e.message}")
+        nil
+      end
+
       def record(route:, duration_ms:)
         config = @configuration || CloseYourIt.configuration
         return unless config.detect_performance_issues

@@ -7,6 +7,12 @@ e il progetto aderisce al [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-11-17
+
+### Corretto
+
+- **Un errore bloccato arriva all'app così com'è.** Prima, su un errore congelato (`freeze`), la gemma falliva nel segnarlo come già inviato e l'app riceveva un `FrozenError` della gemma al posto del proprio errore, sia nelle richieste web sia nei lavori in background. Ora la gemma ricorda gli errori già inviati senza toccarli: l'errore torna identico e parte una volta sola. Nelle richieste web e nei lavori in background l'app riceve proprio la sua istanza, anche se congelata con il backtrace già impostato: il middleware e l'estensione dei lavori segnalano l'errore senza rilanciarlo, perché Ruby, nel rilanciare un errore congelato, ne solleva una copia. Un problema interno della gemma durante la segnalazione non raggiunge più l'app: finisce nei messaggi di diagnosi e tra le perdite (`reason: :error`). Lo stesso vale per il lavoro di fine richiesta (uso delle pagine e prestazioni): se fallisce, la risposta arriva comunque. (CYRB-35)
+
 ## [0.16.0] - 2026-11-13
 
 ### Corretto

@@ -56,14 +56,8 @@ module CloseYourIt
 
         ActiveSupport::Notifications.subscribe("process_action.action_controller") do |*args|
           event = ActiveSupport::Notifications::Event.new(*args)
-          payload = event.payload
-          # CYSK-29 — usage telemetry: the route is `Controller#action`, NEVER the URL. The registry does
-          # one lookup and one increment; the usage_enabled gate lives inside #record.
-          CloseYourIt.usage_registry.record("route", "#{payload[:controller]}##{payload[:action]}") if CloseYourIt.enabled?
-          perf.record(
-            route: "#{payload[:controller]}##{payload[:action]}",
-            duration_ms: event.duration
-          )
+          # CYSK-29 usage telemetry + performance verdicts; never raises into the request (CYRB-35).
+          perf.process_action(event.payload, event.duration)
         end
       end
 

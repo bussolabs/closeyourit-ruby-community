@@ -51,7 +51,14 @@ module CloseYourIt
   # Internal base exception: used to avoid loops (our own exceptions are never captured).
   class Error < StandardError; end
 
-  CAPTURED_FLAG = :@__closeyourit_captured
+  # Exceptions already captured, so the same instance reported by two entry points (Rack + job,
+  # Rails.error + Sidekiq…) is sent once. Kept OUTSIDE the exception (CYRB-35): the old instance
+  # variable mark raised FrozenError on a frozen exception, and the app got the gem's error in place
+  # of its own. A WeakMap compares keys by identity (an app class overriding #eql?/#hash cannot merge
+  # two distinct errors) and forgets an entry once its exception is garbage collected. Shared by every
+  # thread, hence the lock around the check-and-mark.
+  CAPTURED_EXCEPTIONS = ObjectSpace::WeakMap.new
+  CAPTURED_LOCK = Mutex.new
 
   # Thread-local flag meaning "already inside the diagnostic hook": it stops a notification emitted
   # INSIDE the hook (or by code it calls) from re-entering and re-running the hook → no
@@ -103,20 +110,26 @@ module CloseYourIt
 
     # Captures an exception and sends it (fire-and-forget). No-op when disabled, in a hand-typed
     # command, or when the exception is excluded or already captured.
+    #
+    # Every entry point (Rack middleware, ActiveJob, Rails.error, Sidekiq) calls this and then
+    # re-raises the app's exception: a fault raised in here would replace that exception with the
+    # gem's own. So it never raises: a fault is absorbed, logged and counted as a drop (CYRB-35),
+    # like Client#capture_event does for the send stage.
     def capture_exception(exception, handled: false, level: "error", contexts: nil)
       return nil if in_diagnostic?
       return nil unless enabled?
       return nil if console_error?
       return nil if ignored_exception?(exception)
-      return nil if exception_captured?(exception)
-
-      mark_captured(exception)
+      return nil unless first_capture?(exception)
       return record_drop(:sampled) unless sampled?
 
       event = ErrorEvent.from_exception(
         exception, configuration: configuration, handled: handled, level: level, contexts: contexts
       )
       client.capture_event(event)
+    rescue StandardError => e
+      internal_log(:error, "CloseYourIt capture_exception: #{e.class}: #{e.message}")
+      record_drop(:error, error: e.class.name)
     end
 
     # Sends an already built event (slow_query/slow_method).
@@ -514,12 +527,14 @@ module CloseYourIt
       Random.rand < rate
     end
 
-    def exception_captured?(exception)
-      exception.instance_variable_defined?(CAPTURED_FLAG)
-    end
+    # Atomic check-and-mark: true only for the first caller that sees this exception instance. Two
+    # threads capturing the same instance cannot both pass. The exception itself is never written.
+    def first_capture?(exception)
+      CAPTURED_LOCK.synchronize do
+        next false if CAPTURED_EXCEPTIONS.key?(exception)
 
-    def mark_captured(exception)
-      exception.instance_variable_set(CAPTURED_FLAG, true)
+        CAPTURED_EXCEPTIONS[exception] = true
+      end
     end
 
     def default_internal_logger

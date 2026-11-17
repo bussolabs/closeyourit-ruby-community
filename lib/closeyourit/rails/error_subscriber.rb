@@ -4,7 +4,8 @@ module CloseYourIt
   module Rails
     # `ActiveSupport::ErrorReporter` subscriber (Rails 7+): captures HANDLED errors reported via
     # `Rails.error.report`/`Rails.error.handle`. Unhandled ones already go through the Rack
-    # middleware → dedup (ivar on the instance) avoids double sending.
+    # middleware → dedup by identity (CloseYourIt::CAPTURED_EXCEPTIONS, the exception itself is never
+    # written, so a frozen one works too) avoids double sending.
     class ErrorSubscriber
       SEVERITY_TO_LEVEL = { error: "error", warning: "warning", info: "info" }.freeze
 

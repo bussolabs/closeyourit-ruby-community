@@ -57,4 +57,57 @@ RSpec.describe CloseYourIt::Subscribers::RequestPerformance do
 
     expect(stub).not_to have_been_requested
   end
+
+  # The body of the Railtie's process_action.action_controller listener (CYRB-35).
+  describe "#process_action" do
+    let(:payload) { { controller: "OrdersController", action: "index" } }
+
+    it "records the route usage and emits the performance verdicts" do
+      enable!
+      stub = stub_request(:post, url)
+      allow(CloseYourIt.usage_registry).to receive(:record)
+      fill_profile(count: 6)
+
+      described_class.new.process_action(payload, 20)
+
+      expect(CloseYourIt.usage_registry).to have_received(:record).with("route", "OrdersController#index")
+      expect(stub).to have_been_requested.at_least_once
+    end
+
+    it "does not touch the usage registry when the gem is disabled" do
+      CloseYourIt.init { |c| c.project_id = nil }
+      expect(CloseYourIt).not_to receive(:usage_registry)
+
+      expect(described_class.new.process_action(payload, 20)).to be_nil
+    end
+
+    context "when the end-of-request work fails" do
+      let(:logger) { instance_double(Logger, warn: nil) }
+
+      before do
+        enable!
+        CloseYourIt.internal_logger = logger
+      end
+
+      after { CloseYourIt.internal_logger = nil }
+
+      it "absorbs a usage registry fault and logs it, without raising into the request" do
+        allow(CloseYourIt.usage_registry).to receive(:record).and_raise(NoMethodError, "registry bug")
+
+        expect { described_class.new.process_action(payload, 20) }.not_to raise_error
+
+        expect(logger).to have_received(:warn).with(/request observation failed: NoMethodError: registry bug/)
+      end
+
+      it "absorbs a performance rollup fault and logs it, without raising into the request" do
+        allow(CloseYourIt.usage_registry).to receive(:record)
+        allow(CloseYourIt::Performance::Rollup).to receive(:call).and_raise(ArgumentError, "rollup bug")
+        fill_profile(count: 6)
+
+        expect { described_class.new.process_action(payload, 20) }.not_to raise_error
+
+        expect(logger).to have_received(:warn).with(/ArgumentError: rollup bug/)
+      end
+    end
+  end
 end

@@ -29,11 +29,14 @@ module CloseYourIt
       STASHED_SCOPE_IVAR = :@__closeyourit_stashed_scope
 
       def self.included(base)
+        # Marks the outcome from `ensure`, not rescue + re-raise: re-raising a frozen error that already
+        # has a backtrace makes Ruby raise an unfrozen COPY (CYRB-35), and the job system must get its own.
         base.around_perform do |job, block|
+          outer_error = $!
           CloseYourIt::Rails::ActiveJobExtension.monitor(job) { block.call }
-        rescue Exception # rubocop:disable Lint/RescueException
-          job.instance_variable_set(:@__closeyourit_job_outcome, :raised)
-          raise
+        ensure
+          error = $!
+          job.instance_variable_set(:@__closeyourit_job_outcome, :raised) if error && !error.equal?(outer_error)
         end
 
         return unless base.respond_to?(:after_discard)
@@ -47,21 +50,32 @@ module CloseYourIt
       # bleed between jobs on the same thread). On ActiveJob 7.1+ it does NOT capture the error
       # (`after_discard` does, only on final failure): here it hands the scope to the job and re-raises.
       # On the legacy fallback it captures.
+      #
+      # Works in `ensure` instead of rescue + re-raise (CYRB-35), like Rails::CaptureExceptions: the
+      # original error keeps propagating untouched, a frozen one included. `$!` at entry is remembered so
+      # that a normal return or a `throw` made while an outer exception is being handled is not mistaken
+      # for an error of this job.
       def self.monitor(job)
         return yield unless CloseYourIt.configuration.report_active_job_errors
 
+        outer_error = $!
         begin
           apply_job_scope(job)
           yield
-        rescue Exception => e # rubocop:disable Lint/RescueException
-          if report_on_discard?(job)
-            job.instance_variable_set(STASHED_SCOPE_IVAR, CloseYourIt::Scope.current)
-          else
-            CloseYourIt.capture_exception(e, handled: false)
-          end
-          raise
         ensure
+          error = $!
+          handle_failure(job, error) if error && !error.equal?(outer_error)
           CloseYourIt::Scope.reset!
+        end
+      end
+
+      # Failed attempt: on ActiveJob 7.1+ hands the scope to `after_discard`, on the legacy fallback
+      # captures here.
+      def self.handle_failure(job, error)
+        if report_on_discard?(job)
+          job.instance_variable_set(STASHED_SCOPE_IVAR, CloseYourIt::Scope.current)
+        else
+          CloseYourIt.capture_exception(error, handled: false)
         end
       end
 
