@@ -7,6 +7,12 @@ e il progetto aderisce al [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [0.17.2] - 2026-11-20
+
+### Corretto
+
+- **Le query lente non lasciano più leggibili pezzi dei valori.** Un apostrofo scritto con la barra davanti (`'O\'Brien'`) non chiude più il valore a metà; su PostgreSQL e SQLite, dove la barra è un carattere normale, un valore che finisce con la barra (`'C:\'`) non lascia leggibili i valori successivi: nel dubbio si nasconde il resto della query. Un valore troncato e mai chiuso viene nascosto fino alla fine. Su MySQL, Trilogy e MariaDB anche i testi fra virgolette doppie diventano `?`; su PostgreSQL restano visibili perché lì sono nomi di colonna. La stessa pulizia vale per la cronologia delle query allegata agli errori e per i profili delle richieste. (CYRB-33)
+
 ## [0.17.1] - 2026-11-17
 
 ### Corretto

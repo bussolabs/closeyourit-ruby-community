@@ -207,6 +207,115 @@ RSpec.describe CloseYourIt::Scrubber do
     it "passes through when disabled" do
       expect(scrubber(obfuscate_sql: false).obfuscate_sql("SELECT 1")).to eq("SELECT 1")
     end
+
+    # CYRB-33 — a backslash-escaped quote used to close the value halfway, leaving `Brien` readable.
+    describe "backslash-escaped quotes" do
+      it "redacts every piece of a value with a backslash-escaped quote" do
+        sql = "SELECT * FROM customers WHERE name = 'O\\'Brien' AND city = 'Rimini'"
+        out = scrubber.obfuscate_sql(sql, db_system: "mysql2")
+        expect(out).to eq("SELECT * FROM customers WHERE name = ? AND city = ?")
+      end
+
+      it "leaves no piece of an escaped value readable on the other databases, the unknown one included" do
+        sql = "SELECT * FROM customers WHERE name = E'O\\'Brien' AND city = 'Rimini'"
+        [ "postgresql", "sqlite", nil ].each do |db_system|
+          out = scrubber.obfuscate_sql(sql, db_system: db_system)
+          expect(out).to start_with("SELECT * FROM customers WHERE name = E?")
+          expect(out).not_to include("O\\", "Brien", "Rimini")
+        end
+      end
+
+      it "treats an escaped backslash as a single character on MySQL" do
+        sql = "SELECT * FROM paths WHERE dir = 'C:\\\\' AND name = 'Secret'"
+        expect(scrubber.obfuscate_sql(sql, db_system: "mysql2")).to eq("SELECT * FROM paths WHERE dir = ? AND name = ?")
+        expect(scrubber.obfuscate_sql(sql)).to eq("SELECT * FROM paths WHERE dir = ? AND name = ?")
+      end
+
+      # Review finding on CYRB-33: on PostgreSQL/SQLite `\` is an ordinary character, so `'C:\'` is a
+      # whole value; reading the backslash as an escape alone left `Mario` and `Rossi` readable.
+      it "does not expose the next values when a value ends with a backslash on PostgreSQL and SQLite" do
+        sql = "SELECT * FROM paths WHERE dir = 'C:\\' AND name = 'Mario' AND city = 'Rossi'"
+        [ "postgresql", "sqlite", nil ].each do |db_system|
+          out = scrubber.obfuscate_sql(sql, db_system: db_system)
+          expect(out).to start_with("SELECT * FROM paths WHERE dir = ?")
+          expect(out).not_to include("C:", "Mario", "Rossi")
+        end
+      end
+
+      it "keeps the query shape on PostgreSQL when no value holds a backslash" do
+        sql = "SELECT * FROM paths WHERE dir = 'C:/tmp' AND name = 'Mario' AND id = 3"
+        expect(scrubber.obfuscate_sql(sql, db_system: "postgresql"))
+          .to eq("SELECT * FROM paths WHERE dir = ? AND name = ? AND id = ?")
+      end
+
+      it "keeps the doubled quote escaping working" do
+        sql = "SELECT * FROM customers WHERE name = 'O''Brien' AND id = 7"
+        expect(scrubber.obfuscate_sql(sql)).to eq("SELECT * FROM customers WHERE name = ? AND id = ?")
+      end
+
+      it "keeps an empty string as a single placeholder" do
+        expect(scrubber.obfuscate_sql("SELECT * FROM t WHERE a = '' AND b = 'x'")).to eq("SELECT * FROM t WHERE a = ? AND b = ?")
+      end
+    end
+
+    describe "unterminated quoted values" do
+      it "hides everything after a quote never closed" do
+        sql = "SELECT * FROM customers WHERE name = 'O\\'Brien Mar"
+        expect(scrubber.obfuscate_sql(sql)).to eq("SELECT * FROM customers WHERE name = ?")
+      end
+
+      it "hides a trailing backslash of a value never closed" do
+        expect(scrubber.obfuscate_sql("SELECT * FROM t WHERE a = 'secret\\")).to eq("SELECT * FROM t WHERE a = ?")
+      end
+
+      it "hides an unterminated double-quoted value on MySQL" do
+        sql = 'SELECT * FROM customers WHERE code = "ACME-'
+        expect(scrubber.obfuscate_sql(sql, db_system: "mysql2")).to eq("SELECT * FROM customers WHERE code = ?")
+      end
+    end
+
+    describe "double-quoted text depends on the database" do
+      let(:sql) { 'SELECT * FROM orders WHERE code = "ACME-SECRET" AND "status" = \'paid\'' }
+
+      it "redacts it as a value on the MySQL family" do
+        %w[mysql2 trilogy mysql mariadb].each do |db_system|
+          out = scrubber.obfuscate_sql(sql, db_system: db_system)
+          expect(out).to eq("SELECT * FROM orders WHERE code = ? AND ? = ?")
+          expect(out).not_to include("ACME", "SECRET", "paid")
+        end
+      end
+
+      it "keeps it readable as an identifier on PostgreSQL" do
+        pg = 'SELECT "users"."email" FROM "users" WHERE "users"."name" = \'Mario\''
+        expect(scrubber.obfuscate_sql(pg, db_system: "postgresql"))
+          .to eq('SELECT "users"."email" FROM "users" WHERE "users"."name" = ?')
+      end
+
+      it "keeps it as it was when the database is unknown" do
+        expect(scrubber.obfuscate_sql(sql)).to eq('SELECT * FROM orders WHERE code = "ACME-SECRET" AND "status" = ?')
+      end
+
+      it "on MySQL does not let a quote inside a double-quoted value open another one" do
+        out = scrubber.obfuscate_sql('SELECT * FROM t WHERE a = "O\'Brien" AND b = 3', db_system: "mysql2")
+        expect(out).to eq("SELECT * FROM t WHERE a = ? AND b = ?")
+      end
+
+      it "on MySQL handles a backslash-escaped double quote" do
+        out = scrubber.obfuscate_sql('SELECT * FROM t WHERE a = "say \"hi\" Mario" LIMIT 1', db_system: "mysql2")
+        expect(out).to eq("SELECT * FROM t WHERE a = ? LIMIT ?")
+      end
+    end
+  end
+
+  describe ".db_system" do
+    it "returns the downcased adapter name" do
+      expect(described_class.db_system(double("connection", adapter_name: "Mysql2"))).to eq("mysql2")
+    end
+
+    it "returns nil when the connection does not declare it" do
+      expect(described_class.db_system(nil)).to be_nil
+      expect(described_class.db_system(Object.new)).to be_nil
+    end
   end
 
   describe "#scrub_message" do

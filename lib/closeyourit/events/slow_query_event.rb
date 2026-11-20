@@ -23,7 +23,7 @@ module CloseYourIt
         "duration_ms" => @duration_ms.round(2),
         "occurred_at" => @occurred_at,
         "environment" => environment,
-        "sql" => @scrubber.obfuscate_sql(@payload[:sql]),
+        "sql" => @scrubber.obfuscate_sql(@payload[:sql], db_system: db_system),
         "name" => @payload[:name],
         "cached" => @payload.fetch(:cached, false),
         "db_system" => db_system,
@@ -41,10 +41,7 @@ module CloseYourIt
     private
 
     def db_system
-      connection = @payload[:connection]
-      return nil unless connection.respond_to?(:adapter_name)
-
-      connection.adapter_name.to_s.downcase
+      Scrubber.db_system(@payload[:connection])
     end
 
     # Bind values — ONLY with capture_query_bindings (opt-in, default OFF). Scrubbed by column name

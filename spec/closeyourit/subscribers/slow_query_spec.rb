@@ -72,6 +72,63 @@ RSpec.describe CloseYourIt::Subscribers::SlowQuery do
     }
   end
 
+  # CYRB-33 — quotes the scrubber used to miss.
+  describe "quoted values by database" do
+    def sent_sql
+      sql = nil
+      expect(WebMock).to have_requested(:post, url).with { |req| sql = JSON.parse(req.body)["sql"] }
+      sql
+    end
+
+    it "redacts both values of a MySQL query with a backslash-escaped quote" do
+      enable!(threshold: 1)
+      stub_request(:post, url)
+
+      record(sql: "SELECT * FROM customers WHERE name = 'O\\'Brien' AND city = 'Rimini'",
+             connection: double("connection", adapter_name: "Mysql2"))
+
+      expect(sent_sql).to eq("SELECT * FROM customers WHERE name = ? AND city = ?")
+    end
+
+    it "redacts a double-quoted value on MySQL" do
+      enable!(threshold: 1)
+      stub_request(:post, url)
+
+      record(sql: 'SELECT * FROM orders WHERE code = "ACME-1234"',
+             connection: double("connection", adapter_name: "Trilogy"))
+
+      expect(sent_sql).to eq("SELECT * FROM orders WHERE code = ?")
+    end
+
+    it "keeps double-quoted column names on PostgreSQL and hides the values" do
+      enable!(threshold: 1)
+      stub_request(:post, url)
+
+      record(sql: 'SELECT "users"."id" FROM "users" WHERE "users"."name" = \'Mario\'',
+             connection: double("connection", adapter_name: "PostgreSQL"))
+
+      expect(sent_sql).to eq('SELECT "users"."id" FROM "users" WHERE "users"."name" = ?')
+    end
+
+    it "uses the database of the connection for the breadcrumb history and the request profile" do
+      enable!(threshold: 1000)
+      CloseYourIt.configuration.detect_performance_issues = true
+      profile = CloseYourIt::Scope.current.performance_profile
+      allow(profile).to receive(:add_query)
+      payload = { name: "Customer Load", cached: false,
+                  sql: %q(SELECT * FROM customers WHERE name = 'O\'Brien' AND code = "ACME-1"),
+                  connection: double("connection", adapter_name: "Mysql2") }
+
+      described_class.new.notify(payload, 5, -> { "app/models/customer.rb:3" })
+
+      expected = "SELECT * FROM customers WHERE name = ? AND code = ?"
+      expect(CloseYourIt::Scope.current.breadcrumbs.to_a.last["message"]).to eq(expected)
+      expect(profile).to have_received(:add_query).with(hash_including(fingerprint: expected))
+    ensure
+      CloseYourIt.clear_scope
+    end
+  end
+
   it "always includes the source (call site), even with bind capture OFF" do
     enable!(threshold: 1)
     stub_request(:post, url)

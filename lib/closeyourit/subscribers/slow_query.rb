@@ -29,11 +29,13 @@ module CloseYourIt
         name = payload[:name]
         sql = payload[:sql]
         cached = payload.fetch(:cached, false)
+        connection = payload[:connection]
         record(name: name, duration_ms: duration_ms, sql: sql, cached: cached,
-               connection: payload[:connection], binds: payload[:binds],
+               connection: connection, binds: payload[:binds],
                type_casted_binds: payload[:type_casted_binds], source: lazy_source)
-        breadcrumb(name: name, sql: sql, duration_ms: duration_ms, cached: cached)
-        profile(name: name, sql: sql, duration_ms: duration_ms, cached: cached, source: lazy_source)
+        breadcrumb(name: name, sql: sql, duration_ms: duration_ms, cached: cached, connection: connection)
+        profile(name: name, sql: sql, duration_ms: duration_ms, cached: cached, source: lazy_source,
+                connection: connection)
       end
 
       def record(name:, duration_ms:, sql:, cached: false, connection: nil,
@@ -56,8 +58,9 @@ module CloseYourIt
       end
 
       # Breadcrumb for EVERY non-system query (not only slow ones): obfuscated SQL, no binds.
-      # Gives the "which queries before the crash" history attached to the error event.
-      def breadcrumb(name:, sql:, duration_ms:, cached: false)
+      # Gives the "which queries before the crash" history attached to the error event. The connection
+      # tells the scrubber which database wrote the SQL, as for the slow query itself (CYRB-33).
+      def breadcrumb(name:, sql:, duration_ms:, cached: false, connection: nil)
         config = @configuration || CloseYourIt.configuration
         return if ignored_name?(name)
         return unless config.breadcrumbs_enabled
@@ -65,7 +68,7 @@ module CloseYourIt
         CloseYourIt.add_breadcrumb(
           category: "query",
           type: "query",
-          message: scrubber(config).obfuscate_sql(sql),
+          message: scrubber(config).obfuscate_sql(sql, db_system: Scrubber.db_system(connection)),
           data: { "name" => name, "duration_ms" => duration_ms.to_f.round(2), "cached" => cached }
         )
       rescue StandardError
@@ -75,13 +78,13 @@ module CloseYourIt
 
       # Pushes EVERY non-system query into the Scope's RequestProfile (for N+1 detection at the end of
       # the request). Only with detect_performance_issues: fingerprint = obfuscated SQL + call site.
-      def profile(name:, sql:, duration_ms:, cached: false, source: nil)
+      def profile(name:, sql:, duration_ms:, cached: false, source: nil, connection: nil)
         config = @configuration || CloseYourIt.configuration
         return unless config.detect_performance_issues
         return if ignored_name?(name)
 
         CloseYourIt::Scope.current.performance_profile.add_query(
-          fingerprint: scrubber(config).obfuscate_sql(sql),
+          fingerprint: scrubber(config).obfuscate_sql(sql, db_system: Scrubber.db_system(connection)),
           source: resolve(source), duration_ms: duration_ms, cached: cached
         )
       rescue StandardError

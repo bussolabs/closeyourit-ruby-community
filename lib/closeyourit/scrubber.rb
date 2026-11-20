@@ -70,8 +70,25 @@ module CloseYourIt
     AUTH_CREDENTIAL = /(\b#{AUTH_SCHEME}[ \t]+)#{NOT_PROSE}#{CREDENTIAL_TOKEN}/
 
     DOLLAR_LITERAL = /\$([A-Za-z_][A-Za-z0-9_]*|)\$.*?(?:\$\1\$|\z)/m
-    STRING_LITERAL = /'(?:[^']|'')*'/
+    # CYRB-33 — a backslash protects the next character (`'O\'Brien'`, MySQL's default escaping),
+    # so an escaped quote no longer closes the value halfway. A value never closed (truncated SQL)
+    # is hidden up to the end, like DOLLAR_LITERAL.
+    STRING_LITERAL = /'(?:[^'\\]|\\.?|'')*(?:'|\z)/m
+    # The same value where the backslash is an ordinary character: PostgreSQL
+    # (standard_conforming_strings, the default) and SQLite. Outside the MySQL family BOTH readings
+    # are applied and their redactions merged (see #redact_ranges): with `'C:\'` followed by another
+    # value the backslash reading alone would leave every next value readable, with `E'O\'Brien'`
+    # the standard reading alone would leave `Brien`. The union hides more, never less — at worst
+    # the rest of the query (risk accepted by the plan).
+    STANDARD_STRING_LITERAL = /'(?:[^']|'')*(?:'|\z)/m
+    # On MySQL (default sql_mode) `"…"` is a string value, not an identifier: redacted ONLY there.
+    # On PostgreSQL/SQLite it quotes column and table names, which must stay readable.
+    DOUBLE_QUOTED_LITERAL = /"(?:[^"\\]|\\.?|"")*(?:"|\z)/m
+    # One pass, the leftmost quote wins: `"O'Brien"` must not open a single-quoted value.
+    MYSQL_STRING_LITERAL = /#{STRING_LITERAL}|#{DOUBLE_QUOTED_LITERAL}/
     NUMERIC_LITERAL = /(?<![\w$])\d+(?:\.\d+)?\b/
+    # Downcased `adapter_name` of the MySQL family: Mysql2, Trilogy, MySQL, MariaDB (and variants).
+    MYSQL_FAMILY = /mysql|mariadb|trilogy/
 
     # CYRB-32 — what an invalid byte becomes: U+FFFD, the Unicode replacement character.
     REPLACEMENT = "\uFFFD"
@@ -82,6 +99,14 @@ module CloseYourIt
     # CYRB-43 — what a reference back to a container still being visited becomes. Same placeholder
     # as the JavaScript and Python SDKs, so the panel shows the same thing whatever the SDK.
     CIRCULAR = "[Circular]"
+
+    # Database that ran a query, as the downcased `adapter_name` of its connection (`postgresql`,
+    # `mysql2`, `trilogy`…); nil when the connection does not declare it.
+    def self.db_system(connection)
+      return nil unless connection.respond_to?(:adapter_name)
+
+      connection.adapter_name.to_s.downcase
+    end
 
     def initialize(configuration)
       @configuration = configuration
@@ -126,11 +151,20 @@ module CloseYourIt
       end
     end
 
-    # Masks the (string/numeric) literals in SQL, preserving the structure.
-    def obfuscate_sql(sql)
+    # Masks the (string/numeric) literals in SQL, preserving the structure. `db_system` (see
+    # .db_system) decides what double quotes and backslashes are: a value and an escape on the
+    # MySQL family; elsewhere and when unknown an identifier, and a backslash read both ways
+    # (CYRB-33).
+    def obfuscate_sql(sql, db_system: nil)
       return sql if sql.nil? || !@configuration.obfuscate_sql
 
-      sql.to_s.gsub(DOLLAR_LITERAL, "?").gsub(STRING_LITERAL, "?").gsub(NUMERIC_LITERAL, "?")
+      masked = sql.to_s.gsub(DOLLAR_LITERAL, "?")
+      masked = if MYSQL_FAMILY.match?(db_system.to_s)
+        masked.gsub(MYSQL_STRING_LITERAL, "?")
+      else
+        redact_ranges(masked, [ STRING_LITERAL, STANDARD_STRING_LITERAL ])
+      end
+      masked.gsub(NUMERIC_LITERAL, "?")
     end
 
     # Built-in rule (authentication schemes) BEFORE the user patterns: the two protections add up,
@@ -154,6 +188,33 @@ module CloseYourIt
     end
 
     private
+
+    # Replaces with ONE `?` every stretch of text matched by at least one of the patterns:
+    # overlapping or touching matches of different patterns become a single placeholder.
+    def redact_ranges(text, patterns)
+      ranges = patterns.flat_map { |pattern| match_ranges(text, pattern) }.sort
+      merged = ranges.each_with_object([]) do |(from, to), acc|
+        if acc.any? && from <= acc.last[1]
+          acc.last[1] = [ acc.last[1], to ].max
+        else
+          acc << [ from, to ]
+        end
+      end
+
+      cursor = 0
+      out = +""
+      merged.each do |from, to|
+        out << text[cursor...from] << "?"
+        cursor = to
+      end
+      out << text[cursor..]
+    end
+
+    def match_ranges(text, pattern)
+      ranges = []
+      text.scan(pattern) { ranges << Regexp.last_match.offset(0) }
+      ranges
+    end
 
     def filter_node(value, visiting)
       case value
